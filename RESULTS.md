@@ -114,45 +114,43 @@ Figure: `results/intracortical_benchmark.png`.
 
 ## 3. Real-EEG benchmark — "can scalp EEG carry this / does the architecture work?"
 
-`python scripts/run_real_benchmark.py --subjects 8 --folds 3 --epochs 120` —
-PhysioNet motor EEG (left vs right fist, 64 ch, 160 Hz), within-subject 3-fold CV,
-cropped-window training + trial vote, dropout 0.4, MRI-free mu-frequency CV proxy.
+`python scripts/run_real_benchmark.py --seeds 3` — PhysioNet motor EEG (left vs
+right fist, 64 ch, 160 Hz), within-subject 3-fold CV, cropped-window training +
+trial vote, dropout, MRI-free mu-frequency CV proxy. **With the F1 span fix**, so
+the gate had a fair, CV-differentiating mask this time (the earlier run was
+confounded — that confound is now removed).
 
-| model | within-subject accuracy |
+| model | within-subject accuracy (mean [95% CI], 3 seeds) |
 | --- | --- |
-| b2ss-cv (proxy gate) | 0.481 ± 0.085 |
-| b2ss-learned | 0.517 ± 0.075 |
-| b2ss-none | 0.506 ± 0.076 |
-| **EEGNet** | **0.606 ± 0.081** |
-| **CSP+LDA** | **0.639 ± 0.132** |
+| **CSP+LDA** | **0.596 [0.504, 0.689]** |
+| **EEGNet** | **0.546 [0.421, 0.672]** |
+| b2ss-none | 0.522 [0.462, 0.582] |
+| b2ss-learned | 0.483 [0.453, 0.513] |
+| b2ss-cv (proxy gate) | 0.473 [0.434, 0.512] |
 
-Paired vs b2ss-cv (Wilcoxon): learned Δ−0.036 (p=.16), none Δ−0.025 (p=.81),
-EEGNet Δ−0.125 (p=.055), CSP Δ−0.158 (p=.078). ~110k params for B2SS vs ~2.7k for EEGNet.
+Paired vs b2ss-cv (per-subject, seed-averaged): learned Δ−0.010 (p=.69), none
+Δ−0.049 (p=.10), EEGNet Δ−0.073 (p=.46), CSP Δ−0.123 (p=.15).
 
-**Honest read — this is a partial, nuanced result, not a clean win:**
+**Honest read (confound removed):**
 
-1. **The EEG carries decodable motor information.** CSP+LDA (0.639) and EEGNet
-   (0.606) are clearly above the 0.5 chance line — so "scalp EEG can't carry
-   motor intent" is false. The information is there.
-2. **The B2SS architecture is *not* competitive here** (~0.48–0.52), trailing both
-   baselines (marginally significant vs EEGNet/CSP). This is the expected reality
-   of small-trial EEG: a 110k-param Transformer+Neural-ODE built for *continuous
-   kinematic regression with a CV prior* is the wrong tool for a ~45-trial 2-class
-   classification task, where the tiny EEGNet and classical CSP dominate. Dropout,
-   cropped-window augmentation, and 120 epochs did not close the gap.
-3. **The EEG-only CV proxy gives no benefit** — `b2ss-cv` (0.481) is if anything
-   slightly *below* `learned`/`none`. This matches the literature: the mu-frequency
-   ↔ conduction-velocity link is weak and indirect (BACKGROUND §8). The proxy is a
-   convenience path, not a substitute for measured CV.
+1. **The EEG carries decodable motor information** — CSP (0.596) and EEGNet (0.546)
+   are above the 0.5 chance line. The information is there.
+2. **The CV gate gives no benefit even after the F1 fix** — `b2ss-cv` (0.473) ≈
+   `b2ss-learned` (0.483), and `b2ss-none` (0.522) is the *best* B2SS variant. So the
+   earlier "gate doesn't help" was **not** just the span bug: with a properly
+   CV-differentiating mask, the mu-frequency proxy is still uninformative. This is
+   the clean, un-confounded negative — exactly what the weak, indirect mu↔CV link in
+   the literature predicts (BACKGROUND §8).
+3. **B2SS is not competitive on this task** (~0.47–0.52 vs CSP 0.60) — a decoder
+   built for continuous kinematic regression is the wrong tool for a ~45-trial
+   2-class classification problem where tiny EEGNet and classical CSP dominate.
 
-**What this does and doesn't settle.** It removes the strong form of the "EEG can't
-carry it" threat (the task is decodable) and proves the pipeline runs end-to-end on
-real data with no planted structure. It does **not** show the B2SS decoder beating
-baselines — and honestly it shouldn't be expected to on this mismatched task. The
-architecture's home regime is continuous kinematic decoding; the appropriate real-
-data validation is a **continuous intracortical reach dataset** (e.g. Neural Latents
-MC_Maze), which is the recommended next step. The CV *mechanism* itself is
-demonstrated where it applies — the heterogeneous-CV ablation (Study B).
+**What this settles.** The strong "EEG can't carry it" threat is removed (the task
+is decodable). But the CV gate does not help real EEG decoding, and the fix to F1
+confirms this is the *proxy*, not a masking artifact. Together with §2, the picture
+is consistent: the CV mechanism helps only where a CV→window structure genuinely
+exists (synthetic), and neither real dataset — lacking a *measured* CV — shows a
+benefit.
 
 ---
 
@@ -193,8 +191,14 @@ correction — so the pre-registered §6 plan is runnable, not just described.
 
 - The synthetic ablation proves the *mechanism* (a CV-derived window helps when a
   CV→window structure exists); it is not evidence the structure exists in brains.
-- The real-EEG benchmark tests the *architecture* on real data with a *weak,
-  indirect* CV proxy; it does not validate CV-modulated decoding clinically.
+- On **both** real datasets the CV gate gives **no benefit**: on EEG the mu-proxy is
+  uninformative (confirmed after the F1 fix, so not a masking artifact); on
+  intracortical continuous decoding the gate actively *hurts* (recency-masking drops
+  useful history). The mechanism's usefulness is contingent on data having the
+  CV→window structure it assumes — which no real recording here provides (none has a
+  *measured* CV).
+- B2SS is a real decoder (beats linear Ridge) but is not competitive with a GRU
+  (intracortical) or with EEGNet/CSP (EEG) on these tasks.
 - The corrected power analysis is about the *proposal's* design, not a new result.
 - None of this substitutes for the wet-lab study (MRI g-ratio, TMS-EEG, sEEG,
-  closed-loop prosthetic control).
+  closed-loop prosthetic control) — the only setting with a measured CV to test.

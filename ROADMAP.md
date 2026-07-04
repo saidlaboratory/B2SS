@@ -89,12 +89,12 @@ uncertainty gate, latency, and the pre-registered stats harness._
 - **Effect-size realism** — ✅ resolved. Corrected power: d=0.37 needs N≈60–80;
   proposal's N=30 gives 0.50 power. Full §6 stats harness runnable.
 - **Latency <50 ms** — ✅ resolved. 0.9–2.5 ms p95 on CPU.
-- **Can EEG carry it / architecture competitive** — ⚠️ partial + **now known to be
-  confounded**. EEG is decodable (CSP 0.64, EEGNet 0.61 ≫ chance) and the pipeline
-  runs on real data, but the B2SS decoder (~0.48–0.52) is not competitive on
-  small-trial 2-class EEG. The "mu-proxy gate doesn't help" conclusion is **not
-  trustworthy** until F1 below is fixed: the recency-mask span was mis-scaled in the
-  EEG config (0.4–2 tokens of 30, ~CV-invariant), so the gate had no fair chance.
+- **Can EEG carry it / architecture competitive** — ✅ resolved (confound removed).
+  After the F1 fix, re-ran 3 seeds: EEG is decodable (CSP 0.60, EEGNet 0.55 ≫ chance)
+  but the CV gate still gives **no benefit** (b2ss-cv 0.47 ≈ learned 0.48; none 0.52
+  is the best B2SS variant), and B2SS is not competitive on small-trial 2-class EEG.
+  The F1 fix confirms this is the *mu-proxy being uninformative*, not a masking
+  artifact — a clean, un-confounded negative. See RESULTS.md §3.
 
 ---
 
@@ -131,7 +131,8 @@ Ordered by severity. F1–F3 are correctness; F4–F6 are doc/rigor drift.
 - ☑ F1: config-invariant τ→span (fraction of window; 10–60% in every config; EEG now 3–18 of 30 tokens)
 - ☑ F2: recency-weighted pooling (τ gates the readout, not just attention)
 - ☑ F3: non-autonomous ODE field `dz/dt=f(z,t)` (time fraction appended)
-- ◐ Re-run ablation + real benchmark after the fixes; regenerate `results/`
+- ☑ Re-ran ablation (5 seeds), real benchmark (3 seeds), intracortical (3 seeds),
+  sensitivity (3 seeds) after the fixes; `results/` regenerated; RESULTS.md updated
 
 ## P2 — The decisive real-data experiment
 - ☑ Intracortical loader (`b2ss/intracortical.py`) + benchmark
