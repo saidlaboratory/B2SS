@@ -129,7 +129,49 @@ def make_subject(cv: float, *, n_train: int = 600, n_test: int = 200,
                        cont_eeg=e_co, cont_kin=k_co)
 
 
-def oracle_predict(X: np.ndarray, A: np.ndarray, B: np.ndarray, width: int) -> np.ndarray:
+@dataclass
+class HetData:
+    """Heterogeneous-CV regime: every trial has its own CV (hence its own optimal
+    window). A single constant window is provably suboptimal here, so a decoder
+    that reads per-trial CV gains genuine *information*, not merely a better prior.
+    """
+    X_train: np.ndarray
+    Y_train: np.ndarray
+    cv_train: np.ndarray       # (n_train,)
+    X_test: np.ndarray
+    Y_test: np.ndarray
+    cv_test: np.ndarray        # (n_test,)
+    A: np.ndarray
+    B: np.ndarray
+
+
+def _het_windows(A, B, cvs, rng, eeg_noise, kin_noise):
+    n = len(cvs)
+    X = np.empty((n, N_CHAN, WIN), dtype=np.float32)
+    Y = np.empty((n, N_KIN), dtype=np.float32)
+    for i, cv in enumerate(cvs):
+        intent = gaussian_filter1d(rng.standard_normal((D_LATENT, WIN)), sigma=3.0, axis=1)
+        intent /= intent.std(axis=1, keepdims=True) + 1e-8
+        X[i] = A @ intent + rng.normal(0.0, eeg_noise, (N_CHAN, WIN))
+        box = _causal_boxcar(intent, cv_to_width(cv))
+        Y[i] = B @ box[:, -1] + rng.normal(0.0, kin_noise, N_KIN)
+    return X, Y
+
+
+def make_heterogeneous(*, n_train: int = 600, n_test: int = 300, eeg_noise: float = 1.0,
+                       kin_noise: float = 0.05, lo: float = 28.0, hi: float = 68.0,
+                       seed: int = 0) -> HetData:
+    rng = np.random.default_rng(seed)
+    A = (rng.standard_normal((N_CHAN, D_LATENT)) / np.sqrt(D_LATENT)).astype(np.float32)
+    B = rng.standard_normal((N_KIN, D_LATENT)).astype(np.float32)
+    cv_tr = rng.uniform(lo, hi, n_train)
+    cv_te = rng.uniform(lo, hi, n_test)
+    Xtr, Ytr = _het_windows(A, B, cv_tr, rng, eeg_noise, kin_noise)
+    Xte, Yte = _het_windows(A, B, cv_te, rng, eeg_noise, kin_noise)
+    return HetData(Xtr, Ytr, cv_tr, Xte, Yte, cv_te, A, B)
+
+
+def oracle_predict(X: np.ndarray, A: np.ndarray, B: np.ndarray, width) -> np.ndarray:
     """Best-case linear readout given a chosen integration `width`.
 
     Recovers intent per-timepoint (pinv A), causally averages over `width`, maps
@@ -138,10 +180,11 @@ def oracle_predict(X: np.ndarray, A: np.ndarray, B: np.ndarray, width: int) -> n
     training involved.
     """
     Ap = np.linalg.pinv(A)                       # (D, C)
+    widths = np.broadcast_to(np.asarray(width), (X.shape[0],))  # scalar or per-trial
     preds = np.empty((X.shape[0], B.shape[0]), dtype=np.float32)
     for i in range(X.shape[0]):
         intent_hat = Ap @ X[i]                   # (D, WIN)
-        box = _causal_boxcar(intent_hat, width)  # (D, WIN)
+        box = _causal_boxcar(intent_hat, int(widths[i]))
         preds[i] = B @ box[:, -1]
     return preds
 
@@ -166,8 +209,17 @@ def _selfcheck() -> None:
         correct.append(_mse(oracle_predict(sub.X_test, sub.A, sub.B, sub.width), sub.Y_test))
         fixed.append(_mse(oracle_predict(sub.X_test, sub.A, sub.B, W_MAX), sub.Y_test))
     assert np.mean(correct) < np.mean(fixed), (np.mean(correct), np.mean(fixed))
-    print(f"data.py self-check OK: correct-width MSE {np.mean(correct):.4f} "
-          f"< fixed-width MSE {np.mean(fixed):.4f}")
+
+    # Heterogeneous regime: per-trial correct width beats the best single constant
+    # width -> here CV is information a constant window cannot capture.
+    het = make_heterogeneous(n_train=10, n_test=300, seed=5)
+    per_trial = _mse(oracle_predict(het.X_test, het.A, het.B,
+                                    [cv_to_width(c) for c in het.cv_test]), het.Y_test)
+    best_const = min(_mse(oracle_predict(het.X_test, het.A, het.B, w), het.Y_test)
+                     for w in range(W_MIN, W_MAX + 1))
+    assert per_trial < best_const, (per_trial, best_const)
+    print(f"data.py self-check OK: correct-width MSE {np.mean(correct):.4f} < "
+          f"fixed {np.mean(fixed):.4f}; het per-trial {per_trial:.4f} < best-const {best_const:.4f}")
 
 
 def _mse(a: np.ndarray, b: np.ndarray) -> float:

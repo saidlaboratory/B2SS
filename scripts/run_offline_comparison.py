@@ -29,13 +29,13 @@ from b2ss.train import train_decoder, predict, decode_continuous
 def run_subject(cv, cfg, epochs, n_train, seed, device):
     sub = make_subject(cv, n_train=n_train, seed=seed)
     out = {}
-    for name, gate in (("b2ss", True), ("control", False)):
-        model = B2SSDecoder(DecoderConfig(**{**cfg.__dict__, "use_cv_gate": gate}))
+    for name, gate in (("b2ss", "cv"), ("control", "learned")):
+        model = B2SSDecoder(DecoderConfig(**{**cfg.__dict__, "gate_mode": gate}))
         train_decoder(model, sub, epochs=epochs, seed=seed, device=device)
-        pred = predict(model, sub.X_test, sub.cv, device)
-        cont = decode_continuous(model, sub.cont_eeg, sub.cv, device)
+        pred = predict(model, sub.X_test, sub.cv, device=device)
+        cont = decode_continuous(model, sub.cont_eeg, sub.cv, device=device)
         with torch.no_grad():
-            tau = float(model.tau_ms(torch.tensor(sub.cv)))
+            tau = float(model.tau_ms(torch.tensor(sub.cv), batch=1)[0])
         out[name] = {
             "mse": mse(pred, sub.Y_test),
             "r": pearson_r(pred, sub.Y_test),

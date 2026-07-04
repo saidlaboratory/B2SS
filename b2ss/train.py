@@ -1,4 +1,9 @@
-"""Per-subject training loop (proposal 4.5): Adam, MSE + L2, early stopping."""
+"""Training + inference (proposal 4.5): Adam, MSE/CE + L2, early stopping.
+
+Works on raw arrays (regression or classification), so the same loop drives the
+synthetic testbed, the ablations, and the real-EEG benchmark. CV is passed per
+sample, so heterogeneous-CV data and per-subject-constant data use one code path.
+"""
 
 from __future__ import annotations
 
@@ -8,97 +13,108 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .data import SubjectData
+from .data import SubjectData, WIN
 from .model import B2SSDecoder
 
 
 @dataclass
 class TrainResult:
-    best_val_mse: float
+    best_val: float
     epochs_run: int
     history: list[float]
 
 
-def _to_tensor(a: np.ndarray, device: str) -> torch.Tensor:
-    return torch.from_numpy(np.ascontiguousarray(a)).float().to(device)
+def _t(a, device, dtype=torch.float32) -> torch.Tensor:
+    return torch.as_tensor(np.ascontiguousarray(a), dtype=dtype, device=device)
 
 
-def train_decoder(model: B2SSDecoder, sub: SubjectData, *, epochs: int = 40,
-                  lr: float = 1e-4, weight_decay: float = 1e-5, batch_size: int = 128,
-                  patience: int = 10, val_frac: float = 0.18, device: str = "cpu",
-                  seed: int = 0) -> TrainResult:
-    """Train in place on sub.X_train/Y_train; early-stop on a held-out val split.
+def _cv_array(cv, n: int, device):
+    if cv is None:
+        return None
+    arr = np.full(n, float(cv)) if np.ndim(cv) == 0 else np.asarray(cv, float)
+    return _t(arr, device)
 
-    val_frac of X_train (already the 85% non-test portion) ~ 0.15 of all data,
-    matching the proposal's 70/15/15 split.
-    """
+
+def fit(model: B2SSDecoder, X, Y, *, cv=None, cv_sd=None, epochs: int = 40,
+        lr: float = 1e-3, weight_decay: float = 1e-5, batch_size: int = 128,
+        patience: int = 12, val_frac: float = 0.18, device: str = "cpu",
+        seed: int = 0) -> TrainResult:
+    """Train in place; early-stop on a held-out val split. lr default 1e-3 for the
+    small CPU models here (the proposal's 1e-4 is for the full A100 model)."""
     torch.manual_seed(seed)
     model.to(device)
-    uses_cv = model.cfg.use_cv_gate
-    cv = torch.tensor(sub.cv, device=device)
+    clf = model.cfg.task == "classification"
 
-    X = _to_tensor(sub.X_train, device)
-    Y = _to_tensor(sub.Y_train, device)
-    n = X.shape[0]
+    n = len(X)
+    Xt = _t(X, device)
+    Yt = _t(Y, device, torch.long if clf else torch.float32)
+    cvt = _cv_array(cv, n, device)
+    sdt = _cv_array(cv_sd, n, device)
+
     perm = torch.randperm(n, generator=torch.Generator().manual_seed(seed))
     n_val = max(1, int(round(n * val_frac)))
-    val_idx, tr_idx = perm[:n_val], perm[n_val:]
-    Xtr, Ytr, Xval, Yval = X[tr_idx], Y[tr_idx], X[val_idx], Y[val_idx]
+    vi, ti = perm[:n_val], perm[n_val:]
 
     opt = torch.optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999),
                            weight_decay=weight_decay)
-    loss_fn = nn.MSELoss()
+    loss_fn = nn.CrossEntropyLoss() if clf else nn.MSELoss()
+
+    def run(idx):
+        c = cvt[idx] if cvt is not None else None
+        s = sdt[idx] if sdt is not None else None
+        return model(Xt[idx], c, s)
 
     best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
-    best_val, since_best, history = float("inf"), 0, []
+    best_val, since, history = float("inf"), 0, []
     g = torch.Generator().manual_seed(seed)
 
-    for epoch in range(epochs):
+    for _ in range(epochs):
         model.train()
-        for b in torch.randperm(Xtr.shape[0], generator=g).split(batch_size):
+        for b in ti[torch.randperm(len(ti), generator=g)].split(batch_size):
             opt.zero_grad()
-            pred = model(Xtr[b], cv) if uses_cv else model(Xtr[b])
-            loss_fn(pred, Ytr[b]).backward()
+            loss_fn(run(b), Yt[b]).backward()
             opt.step()
-
+            if hasattr(model, "constrain_"):      # e.g. EEGNet max-norm constraints
+                model.constrain_()
         model.eval()
         with torch.no_grad():
-            vp = model(Xval, cv) if uses_cv else model(Xval)
-            val = float(loss_fn(vp, Yval))
+            val = float(loss_fn(run(vi), Yt[vi]))
         history.append(val)
-
         if val < best_val - 1e-6:
-            best_val, since_best = val, 0
+            best_val, since = val, 0
             best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
         else:
-            since_best += 1
-            if since_best >= patience:
+            since += 1
+            if since >= patience:
                 break
 
     model.load_state_dict(best_state)
-    return TrainResult(best_val_mse=best_val, epochs_run=len(history), history=history)
+    return TrainResult(best_val=best_val, epochs_run=len(history), history=history)
 
 
 @torch.no_grad()
-def predict(model: B2SSDecoder, X: np.ndarray, cv: float, device: str = "cpu") -> np.ndarray:
+def predict(model: B2SSDecoder, X, cv=None, cv_sd=None, device: str = "cpu") -> np.ndarray:
+    """Regression -> (N, out); classification -> logits (N, n_classes)."""
     model.eval()
-    xt = _to_tensor(X, device)
-    out = model(xt, torch.tensor(cv, device=device)) if model.cfg.use_cv_gate else model(xt)
+    n = len(X)
+    out = model(_t(X, device), _cv_array(cv, n, device), _cv_array(cv_sd, n, device))
     return out.cpu().numpy()
+
+
+# -- SubjectData convenience wrappers (synthetic offline comparison) --------- #
+def train_decoder(model: B2SSDecoder, sub: SubjectData, *, epochs: int = 40,
+                  device: str = "cpu", seed: int = 0, **kw) -> TrainResult:
+    return fit(model, sub.X_train, sub.Y_train, cv=sub.cv, epochs=epochs,
+               device=device, seed=seed, **kw)
 
 
 @torch.no_grad()
 def decode_continuous(model: B2SSDecoder, eeg: np.ndarray, cv: float,
                       device: str = "cpu") -> np.ndarray:
-    """Slide the window over a continuous segment -> (N_KIN, L) decode for latency.
-
-    eeg: (C, L). Output aligned so column t is the decode of the window ending at t
-    (first WIN-1 columns are NaN-free copies of the first valid decode).
-    """
-    from .data import WIN
+    """Slide the window over a continuous segment -> (N_KIN, L) decode for latency."""
     from numpy.lib.stride_tricks import sliding_window_view
-    xs = np.transpose(sliding_window_view(eeg, WIN, axis=1), (1, 0, 2))  # (n, C, WIN)
-    preds = predict(model, xs.astype(np.float32), cv, device)            # (n, N_KIN)
+    xs = np.transpose(sliding_window_view(eeg, WIN, axis=1), (1, 0, 2))
+    preds = predict(model, xs.astype(np.float32), cv, device=device)
     L = eeg.shape[1]
     out = np.empty((preds.shape[1], L), dtype=np.float32)
     out[:, WIN - 1:] = preds.T
@@ -111,14 +127,20 @@ def _selfcheck() -> None:
     from .model import DecoderConfig
     from .eval import mse
     sub = make_subject(cv=55.0, n_train=200, n_test=100, seed=7)
-    model = B2SSDecoder(DecoderConfig(use_cv_gate=True))
-    res = train_decoder(model, sub, epochs=15, seed=7)
-    assert np.isfinite(res.best_val_mse)
+    m = B2SSDecoder(DecoderConfig(gate_mode="cv"))
+    res = train_decoder(m, sub, epochs=15, seed=7)
+    assert np.isfinite(res.best_val)
     assert res.history[-1] <= res.history[0] + 1e-6, "val loss should not blow up"
-    test_mse = mse(predict(model, sub.X_test, sub.cv), sub.Y_test)
-    assert np.isfinite(test_mse)
-    print(f"train.py self-check OK: val_mse {res.history[0]:.3f}->{res.best_val_mse:.3f} "
-          f"in {res.epochs_run} ep; test MSE {test_mse:.3f}")
+    assert np.isfinite(mse(predict(m, sub.X_test, sub.cv), sub.Y_test))
+
+    # classification path
+    Xc = np.random.default_rng(0).standard_normal((60, sub.X_train.shape[1], WIN)).astype("float32")
+    yc = np.random.default_rng(1).integers(0, 2, 60)
+    clf = B2SSDecoder(DecoderConfig(task="classification", n_classes=2, gate_mode="none"))
+    rc = fit(clf, Xc, yc, epochs=5, seed=0)
+    assert predict(clf, Xc).shape == (60, 2) and np.isfinite(rc.best_val)
+    print(f"train.py self-check OK: val {res.history[0]:.3f}->{res.best_val:.3f} "
+          f"in {res.epochs_run} ep; clf path OK")
 
 
 if __name__ == "__main__":

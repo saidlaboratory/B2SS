@@ -142,6 +142,43 @@ plausibility testbed — **not** evidence for H1–H6, which require the real da
 - Timeline: 36 months, 8 phases. Budget: **$789,759** total request.
 - Pre-registered on OSF; data → OpenNeuro; code → MIT on GitHub.
 
+## 9b. Publication-grade upgrade (v2): removing the reviewer threats
+
+The first build was a synthetic testbed. v2 adds the machinery to answer the three
+threats a reviewer would raise, plus the promised add-ons. Nothing here fakes a
+positive result — each is a *fair test*, reported honestly in [RESULTS.md](RESULTS.md).
+
+- **Threat "information vs. prior."** The control already learns its own window τ,
+  so a B2SS win could be just a better prior. Two answers: (1) the **gate ablation**
+  (`scripts/run_ablation.py`) sweeps training-set size — in the *homogeneous* case
+  the CV advantage is honestly characterised as a prior/data-efficiency benefit
+  that shrinks with data; (2) the **heterogeneous-CV regime** (`data.make_heterogeneous`),
+  where CV varies per trial, is a case a single learned constant *provably cannot*
+  fit — there the CV gate carries genuine information and the gap persists. Backed
+  by real biology: CV varies ~2× between tracts and ~20× within a tract, and
+  learnable-per-input-delay models beat global constants (see BACKGROUND §8).
+- **Threat "can scalp EEG carry this?"** The **real-EEG benchmark**
+  (`scripts/run_real_benchmark.py`) runs on PhysioNet motor EEG (left vs right
+  fist) against **EEGNet** and **CSP+LDA**, within-subject, cropped-window
+  training, no planted structure. Honest outcome (see [RESULTS.md](RESULTS.md)):
+  the EEG *is* decodable (CSP 0.64, EEGNet 0.61 ≫ chance), so the information is
+  there — but the B2SS decoder (~0.48–0.52) does **not** beat these baselines on
+  small-trial 2-class EEG, and the weak mu-proxy gate doesn't help. This is the
+  wrong regime for the architecture (built for continuous kinematics); the right
+  real-data test is a continuous intracortical reach dataset. Reported straight,
+  not spun.
+- **Threat "effect sizes are optimistic."** The **stats harness** (`b2ss/stats.py`)
+  recomputes power with the *verified* Clark effect (d≈0.37, not 0.45): ~60–79
+  subjects needed, so the proposal's N=30 is underpowered for it. Also implements
+  ICC(2,1) for H1, the H3 mixed model with marginal ΔR², and FDR/Bonferroni.
+
+**Add-ons.** (1) **CV proxy from EEG alone** (`b2ss/proxies.py`) — mu peak frequency,
+so the method needs no MRI/TMS (an indirect, honestly-caveated surrogate).
+(2) **Uncertainty-aware gate** — a noisy CV estimate shrinks τ toward the
+population window (trust the prior only where reliable). (3) **Measured** real-time
+latency (`scripts/bench_latency.py`) — comfortably under the 50 ms budget even on
+CPU. (4) Four-way gate ablation (`cv`/`learned`/`fixed`/`none`).
+
 ## 10. Risks the proposal flags
 
 - CV signal too weak to help (null H4) → dataset still yields the g-ratio atlas.

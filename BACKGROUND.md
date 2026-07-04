@@ -211,6 +211,58 @@ control.
 
 ---
 
+## 8. Evidence base for the v2 software methods
+
+The publication-grade upgrade (real-EEG benchmark, CV proxy, heterogeneous-CV
+ablation, uncertainty gate) rests on the following literature.
+
+**CV proxy from EEG (mu peak frequency).** The proxy uses each subject's
+sensorimotor mu-rhythm peak frequency, estimated with a lightweight version of
+the Corcoran et al. (2018) `restingIAF` method (Welch PSD, 1/f removal, 7–13 Hz
+peak). The rationale that peak frequency indexes conduction speed comes from
+Nunez's global standing-wave theory (resonant frequency ∝ cortico-cortical
+conduction velocity / loop length, f ≈ nν/L) and from Valdés-Hernández et al.
+(2010), who found peak alpha frequency correlates with white-matter fractional
+anisotropy (N=222). **Honest caveat (encoded in the code and docs):** this link
+is real but *weak-to-moderate, correlational, and mechanistically ambiguous* —
+alpha/mu frequency is also governed by thalamocortical membrane dynamics, and
+IAF↔white-matter correlations are small and inconsistent across studies. The
+proxy is presented as an indirect surrogate, never a calibrated per-person CV.
+
+**CV heterogeneity → a constant window is suboptimal (the "information" case).**
+Conduction velocity varies ~2× *between* human callosal tracts (prefrontal ~4.9
+vs motor ~8.8 m/s; Wang et al. 2008; Caminiti et al. 2013) and up to ~20×
+*within* a tract (macaque pyramidal tract 5–94 m/s), so no single temporal window
+fits the fibre population — the premise of the heterogeneous-CV regime in
+`data.make_heterogeneous`. Learnable per-input delay models are the direct
+engineering precedent that per-context delays beat a global constant: DCLS-Delays
+(Hammouamri et al. 2023) and learnable axonal delays (Sun et al. 2023) reach SOTA
+on spiking benchmarks and their ablations show learned per-connection delays beat
+fixed/uniform ones. **Honest caveat:** genuinely *fast* CV modulation (ms–min) is
+activity/membrane-driven and modest; structural CV (g-ratio) is slow. Arousal
+does **not** reliably change axonal CV (Stoelzel et al. 2017 found none) — so B2SS
+frames its window as set by *structural, per-tract/per-context* CV, and treats any
+state-dependent latency as effective end-to-end latency, not axonal CV.
+
+**Uncertainty-aware gate.** Drakesmith et al. (2019) show MRI-derived CV is
+trustworthy only for large axons (diameter > 4 µm, g 0.6–0.85) and unreliable for
+the sub-micron axons dominating the CNS. The gate therefore shrinks τ toward the
+population-average window when the CV estimate's uncertainty (bootstrap SD) is
+large — trusting the prior only where it is reliable.
+
+**Cropped-window training.** Deep EEG decoders need many trials; PhysioNet gives
+only ~45 per subject. We use cropped-window training with trial-level aggregation
+(Schirrmeister et al. 2017, *Deep learning with CNNs for EEG decoding*), standard
+practice for small-trial EEG and a natural fit to B2SS's window-based design.
+
+**Baselines & bars.** EEGNet (Lawhern et al. 2018) and CSP+LDA (the FBCSP family,
+Ang et al. 2012) are the reimplemented baselines. Competitive within-subject
+accuracy on BCI IV-2a (4-class) is ~77–83% (CTNet 82.5%, EEGNet ~67–77%, FBCSP
+~68%); PhysioNet 2-class within-subject is inherently modest and high-variance
+(be skeptical of published >95%, which usually reflect train/test leakage).
+
+---
+
 ## Citation accuracy notes
 
 Corrections to the **proposal text/reference list** (the underlying science holds;
@@ -277,5 +329,19 @@ and methods):
 - (2023). Can we manipulate brain connectivity? A systematic review of cortico-cortical paired associative stimulation effects. *Clinical Neurophysiology*, 154, 169–193. PMID:37634335
 - (2024). TMS of primary motor cortex elicits an immediate transcranial evoked potential (i-TEP). *Brain Stimulation*, 17(3). doi:10.1016/j.brs.2024.05.003
 - (2025). Mapping brain lesions to conduction delays: the next step for personalized brain models in multiple sclerosis. *Human Brain Mapping*, 46(7), e70219. doi:10.1002/hbm.70219
+
+**Cited for the v2 methods.**
+
+- Corcoran, A. W., et al. (2018). Toward a reliable, automated method of individual alpha frequency (IAF) quantification. *Psychophysiology*, 55(7), e13064. doi:10.1111/psyp.13064
+- Nunez, P. L., & Srinivasan, R. (2006). *Electric Fields of the Brain* (global standing-wave theory; f ≈ nν/L). Oxford University Press.
+- Valdés-Hernández, P. A., et al. (2010). White matter architecture rather than cortical surface area correlates with the EEG alpha rhythm. *NeuroImage*, 49(3), 2328–2339. doi:10.1016/j.neuroimage.2009.10.030
+- Wang, S.-J., et al. (2008). Functional trade-offs in white matter axonal scaling. *Journal of Neuroscience* / Caminiti, R., et al. (2013), *J. Neurosci.* 33(36):14501–14511 (tract-specific callosal conduction velocities).
+- Hammouamri, I., et al. (2023). Learning delays in spiking neural networks using dilated convolutions with learnable spacings (DCLS-Delays). arXiv:2306.17670.
+- Sun, P., et al. (2023). Learnable axonal delay in spiking neural networks. (per-neuron learned delays beat global constants.)
+- Stoelzel, C. R., et al. (2017). Axonal conduction delays, brain state, and corticogeniculate communication. *J. Neurosci.* (arousal did **not** change axonal CV). PMC5490068.
+- Schirrmeister, R. T., et al. (2017). Deep learning with convolutional neural networks for EEG decoding and visualization (cropped training). *Human Brain Mapping*, 38(11), 5391–5420. doi:10.1002/hbm.23730
+- Lawhern, V. J., et al. (2018). EEGNet: a compact convolutional neural network for EEG-based brain–computer interfaces. *J. Neural Eng.*, 15(5), 056013. doi:10.1088/1741-2552/aace8c
+- Ang, K. K., et al. (2012). Filter bank common spatial pattern algorithm on BCI Competition IV datasets 2a and 2b. *Frontiers in Neuroscience*, 6, 39.
+- Schalk, G., et al. (2004). BCI2000: a general-purpose brain–computer interface system (PhysioNet EEGMMI). *IEEE TBME*, 51(6), 1034–1043.
 
 *Author lists abbreviated where long; a few very recent entries are preprints — verify against the final peer-reviewed version before formal citation.*

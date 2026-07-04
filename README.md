@@ -61,19 +61,70 @@ Experiment-3 metrics. On CV-structured data B2SS typically wins ~6/7 subjects
 normal cohort (mid-range-clustered, so the effect is diluted), or
 `--proposal-size` for the full model dimensions. ~2 min on CPU.
 
+### Publication-grade experiments (v2)
+
+These remove the reviewer threats (info-vs-prior, can-EEG-carry-it, effect-size
+realism) and add the promised extras. Outputs land in `results/`.
+
+```bash
+# Gate ablation: cv vs learned vs fixed vs none. Study A (homogeneous, data-
+# efficiency) shows the PRIOR benefit; Study B (heterogeneous CV) shows CV as
+# genuine INFORMATION a learned constant can't capture.
+python scripts/run_ablation.py
+
+# Real EEG (PhysioNet, downloaded via MNE): B2SS vs EEGNet vs CSP+LDA, within-
+# subject CV, using the MRI-free mu-frequency CV proxy. Honest finding: the EEG is
+# decodable (baselines ≫ chance) but B2SS is not competitive on small-trial 2-class
+# EEG — see RESULTS.md for the straight story.
+python scripts/run_real_benchmark.py            # ~30-40 min CPU; --quick to smoke-test
+
+# Decisive experiment: continuous intracortical velocity decoding (NLB MC_Maze,
+# the REGRESSION regime B2SS is built for). B2SS vs GRU vs Ridge, velocity R².
+# Needs pynwb + a 30 MB download (see b2ss/intracortical.py docstring).
+python scripts/run_intracortical_benchmark.py
+
+# Robustness: is the CV-gate benefit a knife-edge or robust to hyperparameters?
+python scripts/run_sensitivity.py
+
+# Real-time inference latency vs the proposal's <50 ms budget.
+python scripts/bench_latency.py --proposal-size
+
+# The pre-registered statistical harness (corrected effect sizes).
+python -m b2ss.stats
+
+# Regenerate EVERYTHING (tests + all experiments + figures) in one command:
+python scripts/reproduce.py            # add --fast to skip downloads/long runs
+```
+
+See [RESULTS.md](RESULTS.md) for the numbers and what they do (and don't) show, and
+[PAPER_OUTLINE.md](PAPER_OUTLINE.md) for the honest paper framing and go/no-go.
+Pinned versions are in `requirements-lock.txt`; the intracortical benchmark also
+needs `pynwb` (`pip install pynwb`).
+
 ## Layout
 
 ```
 b2ss/
-  cv.py      CV from g-ratio (Berman), combined TMS-EEG estimate, bootstrap CIs
-  data.py    synthetic EEG + kinematics with a ground-truth CV→latency law
-  model.py   B2SS decoder (Transformer + CV gate + Euler Neural-ODE) & control
-  train.py   training loop (Adam, MSE, early stopping)
-  eval.py    metrics: MSE, Pearson r, effective latency (xcorr peak lag)
+  cv.py           CV from g-ratio (Berman), combined TMS-EEG estimate, bootstrap CIs
+  data.py         synthetic EEG + kinematics; homogeneous & heterogeneous CV regimes
+  model.py        B2SS decoder (patch-embed → CV gate → Neural-ODE); 4 gate modes
+  train.py        training loop (Adam, MSE/CE, early stopping); regression + classification
+  eval.py         metrics: MSE, Pearson r, effective latency (xcorr peak lag)
+  proxies.py      CV proxy from EEG mu peak frequency (Corcoran-style)
+  datasets.py     PhysioNet EEGMMI loader (MNE) + cropped-window helpers
+  intracortical.py NLB MC_Maze loader (pynwb): binned spikes + hand velocity
+  baselines.py    EEGNet, CSP+LDA, GRU, Ridge
+  stats.py        power (corrected d), ICC(2,1), mixed-model ΔR², FDR/Bonferroni, CIs
 scripts/
-  run_offline_comparison.py   Experiment-3 offline comparison
+  run_offline_comparison.py     synthetic Experiment-3 comparison
+  run_ablation.py               gate ablation (Study A prior / Study B information)
+  run_real_benchmark.py         real EEG: B2SS vs EEGNet/CSP (multi-seed)
+  run_intracortical_benchmark.py real intracortical velocity R² vs GRU/Ridge
+  run_sensitivity.py            hyperparameter robustness of the CV-gate benefit
+  bench_latency.py              inference latency vs 50 ms budget
+  reproduce.py                  one command → all results + figures
 tests/
-  test_b2ss.py                runnable self-checks
+  test_b2ss.py                  16 runnable checks
 ```
 
 ## License
