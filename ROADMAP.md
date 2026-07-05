@@ -219,6 +219,34 @@ the decoder cannot learn (never sees its training data)._ `scripts/run_transfer.
   claim): a cohort with neural recordings + a *measured* per-subject CV — none exists
   publicly (BACKGROUND §9), so it requires a dedicated acquisition.
 
+# PHASE 10 — PIVOT: conduction-aware transfer normalization (the new direction)
+
+_Why: the runs proved within-subject CV is useless (decoders learn the delays) but
+cross-subject transfer is the one regime where measured conduction helps. Pivot B2SS
+from "CV-modulated decoder" to a **conduction normaliser** that cuts the BCI
+recalibration burden. Full plan: [PIVOT.md](PIVOT.md); spec:
+`docs/superpowers/specs/2026-07-06-b2ss-transfer-pivot-design.md`._
+
+Decisions (brainstormed): north star = practical transfer / less calibration;
+alignment source = full spectrum (zero-shot measured-CV / few-shot / unsupervised);
+benchmarks = staged intracortical → EEG(MOABB); novelty = temporal/conduction axis,
+spatial alignment borrowed.
+
+- ☐ **P10.1 Core module** `b2ss/transfer.py`: `ConductionDelayAligner` (grouped
+  low-dim δ), `DelayFitter` (3 modes), `TransferNormalizer` (wraps a FROZEN decoder);
+  + unit tests (oracle δ-recovery, frozen-decoder invariance, few/unsup fit).
+- ☐ **P10.2 Intracortical spectrum benchmark** `scripts/run_transfer_modes.py`:
+  accuracy-vs-target-information curve (zero→unlabeled→few-shot) vs no-norm and full
+  retraining; baselines incl. learned-delay + a TTA method. Multi-seed, CIs.
+- ☐ **P10.3 Real multi-session intracortical**: confirm a dataset (MC_RTT /
+  Makin–Flint multi-day); loader; non-injected transfer test.
+- ☐ **P10.4 EEG breadth** `scripts/run_moabb_transfer.py`: MOABB cross-session &
+  cross-subject; conduction module's **marginal delta on top of spatial alignment**.
+- ☐ **P10.5 Docs + honest reporting**: whatever the numbers say; bound the claim if
+  the conduction delta is intracortical-only. Update RESULTS/PAPER_OUTLINE/PIVOT.
+- Guardrail: novelty = temporal axis only; controlled(injected) vs real always
+  labelled; no result tuned toward a win.
+
 ## Out of scope here (wet-lab / hardware — see proposal)
 - ⊘ MRI g-ratio acquisition & MRtrix3/FSL/FreeSurfer pipeline
 - ⊘ TMS-EEG & sEEG acquisition; CCEP ground truth

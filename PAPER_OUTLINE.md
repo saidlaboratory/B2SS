@@ -3,6 +3,12 @@
 The honest framing to decide *before* writing, and the outline if we proceed.
 Numbers are filled from [RESULTS.md](RESULTS.md) once the full multi-seed runs land.
 
+> **Post-pivot ([PIVOT.md](PIVOT.md)):** the paper's spine is no longer "CV improves
+> decoding" but **"conduction normalisation for cross-subject/session transfer"** —
+> the one evidence-backed claim. The within-subject negatives (§1–§6 below) become the
+> *motivation*; the transfer result + the Phase-10 spectrum/MOABB benchmarks become
+> the contribution. Re-scope the sections accordingly once Phase 10 lands.
+
 ## 1. What this paper is — and is not
 
 **Is:** a *methods / mechanism* paper. "A conduction-velocity-modulated decoder

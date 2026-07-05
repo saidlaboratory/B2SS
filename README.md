@@ -18,6 +18,13 @@ harness, and the offline B2SS-vs-control comparison. The wet-lab experiments
 here. See [BRIEF.md](BRIEF.md) for the full science, [BACKGROUND.md](BACKGROUND.md)
 for the literature, and [ROADMAP.md](ROADMAP.md) for build status.
 
+> **⚠️ The project has pivoted — read [PIVOT.md](PIVOT.md) first.** The multi-seed
+> runs showed the original claim (CV improves *within-subject* decoding) is false —
+> a decoder learns the conduction delays from data — but that CV helps *cross-subject
+> transfer*. B2SS is being rebuilt from a "CV-modulated decoder" into a **conduction
+> normaliser** that cuts BCI recalibration burden. The results below
+> ([RESULTS.md](RESULTS.md)) are the evidence that motivated the pivot.
+
 ## Scope: what this repo is (and isn't)
 
 | Buildable in software (here) | Wet-lab / hardware (not here) |

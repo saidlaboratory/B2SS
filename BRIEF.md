@@ -5,6 +5,11 @@ software this repo actually builds.* Sourced from **B2SS Research Proposal
 v1.1** (June 25, 2026). For the literature and citations see
 [BACKGROUND.md](BACKGROUND.md); for build status see [ROADMAP.md](ROADMAP.md).
 
+> **This brief describes the original proposal.** The project has since **pivoted**
+> — see [PIVOT.md](PIVOT.md). §9b–9d below record why (within-subject CV fails;
+> cross-subject transfer works); the pivot rebuilds B2SS as a conduction *normaliser*
+> for calibration-light transfer.
+
 ---
 
 ## 1. The one-sentence idea
