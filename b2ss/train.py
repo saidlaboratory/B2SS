@@ -35,7 +35,7 @@ def _cv_array(cv, n: int, device):
     return _t(arr, device)
 
 
-def fit(model: B2SSDecoder, X, Y, *, cv=None, cv_sd=None, epochs: int = 40,
+def fit(model: B2SSDecoder, X, Y, *, cv=None, cv_sd=None, delays=None, epochs: int = 40,
         lr: float = 1e-3, weight_decay: float = 1e-5, batch_size: int = 128,
         patience: int = 12, val_frac: float = 0.18, device: str = "cpu",
         seed: int = 0) -> TrainResult:
@@ -50,6 +50,7 @@ def fit(model: B2SSDecoder, X, Y, *, cv=None, cv_sd=None, epochs: int = 40,
     Yt = _t(Y, device, torch.long if clf else torch.float32)
     cvt = _cv_array(cv, n, device)
     sdt = _cv_array(cv_sd, n, device)
+    dlt = None if delays is None else _t(delays, device)   # per-channel, batch-invariant
 
     perm = torch.randperm(n, generator=torch.Generator().manual_seed(seed))
     n_val = max(1, int(round(n * val_frac)))
@@ -62,7 +63,7 @@ def fit(model: B2SSDecoder, X, Y, *, cv=None, cv_sd=None, epochs: int = 40,
     def run(idx):
         c = cvt[idx] if cvt is not None else None
         s = sdt[idx] if sdt is not None else None
-        return model(Xt[idx], c, s)
+        return model(Xt[idx], c, s, dlt)
 
     best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
     best_val, since, history = float("inf"), 0, []
@@ -93,11 +94,12 @@ def fit(model: B2SSDecoder, X, Y, *, cv=None, cv_sd=None, epochs: int = 40,
 
 
 @torch.no_grad()
-def predict(model: B2SSDecoder, X, cv=None, cv_sd=None, device: str = "cpu") -> np.ndarray:
+def predict(model: B2SSDecoder, X, cv=None, cv_sd=None, delays=None, device: str = "cpu") -> np.ndarray:
     """Regression -> (N, out); classification -> logits (N, n_classes)."""
     model.eval()
     n = len(X)
-    out = model(_t(X, device), _cv_array(cv, n, device), _cv_array(cv_sd, n, device))
+    dlt = None if delays is None else _t(delays, device)
+    out = model(_t(X, device), _cv_array(cv, n, device), _cv_array(cv_sd, n, device), dlt)
     return out.cpu().numpy()
 
 

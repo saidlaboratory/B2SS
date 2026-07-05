@@ -79,6 +79,45 @@ def load_maze(bin_s: float = BIN_S, path: Path = NWB_PATH) -> MazeData:
     return d
 
 
+def inject_group_latency(spikes: np.ndarray, n_groups: int = 8,
+                         max_delay_bins: int = 8, seed: int = 0):
+    """Inject a KNOWN per-group conduction latency into real binned spikes (Phase 8
+    bridge). Units are split into `n_groups`; each group's spike train is delayed by
+    an integer δ_g bins (output[t]=input[t-δ_g], zero-filled) — scrambling the
+    cross-group temporal alignment. Returns (shifted_spikes, align_delays) where
+    align_delays[c] = -δ_group(c) are the delays a decoder must apply to UNDO the
+    injection (i.e. the ground-truth "measured CV" for the aligner)."""
+    rng = np.random.default_rng(seed)
+    n, C = spikes.shape
+    group = np.arange(C) % n_groups
+    deltas = rng.integers(0, max_delay_bins + 1, n_groups)      # δ_g >= 0, bins
+    out = np.zeros_like(spikes)
+    for c in range(C):
+        d = int(deltas[group[c]])
+        out[d:, c] = spikes[:n - d, c] if d else spikes[:, c][:n]
+        if d == 0:
+            out[:, c] = spikes[:, c]
+    align_delays = (-deltas[group]).astype(np.float32)          # undo shifts (<=0)
+    return out.astype(np.float32), align_delays
+
+
+def shift_channels(spikes: np.ndarray, delays: np.ndarray) -> np.ndarray:
+    """Integer per-channel time shift: out[t,c] = spikes[t-delays[c], c] (zero-filled).
+    Matches ChannelDelay for integer delays. Used to *align* injected data by its
+    measured (undo) delays back to a common conduction frame."""
+    n, C = spikes.shape
+    out = np.zeros_like(spikes)
+    for c in range(C):
+        d = int(round(float(delays[c])))
+        if d > 0:
+            out[d:, c] = spikes[:n - d, c]
+        elif d < 0:
+            out[:n + d, c] = spikes[-d:, c]
+        else:
+            out[:, c] = spikes[:, c]
+    return out
+
+
 def make_windows(d: MazeData, win: int, smooth_sigma: float = 3.0):
     """Sliding windows over the continuous stream, assigned to the split of their
     last bin. Spikes are Gaussian-smoothed into firing rates first (standard for

@@ -179,6 +179,37 @@ population window (trust the prior only where reliable). (3) **Measured** real-t
 latency (`scripts/bench_latency.py`) — comfortably under the 50 ms budget even on
 CPU. (4) Four-way gate ablation (`cv`/`learned`/`fixed`/`none`).
 
+## 9c. Phase 8: CV as delay-alignment (mechanism redesign)
+
+The gate *shrinks* the window (removes history), which hurt real continuous decoding.
+Phase 8 rebuilds CV usage as delay-**alignment** — time-align each channel by its
+conduction delay, full window kept (`ChannelDelay`, `align_mode='cv'`; also added to
+the GRU) — and tests it on **real MC_Maze spikes with a known injected latency**
+(`scripts/run_latency_bridge.py`), across data sizes. Honest result
+([RESULTS.md](RESULTS.md) §6): a *fixed structural* delay is learnable from data, so
+measured alignment gives at most a small, not-clearly-significant low-data prior on
+the weaker B2SS backbone and **no** benefit on a strong GRU (which learns delays
+itself); the GRU dominates B2SS throughout. This *explains* the earlier negatives and
+sharpens the thesis-level conclusion: **because CV is a fixed structural parameter, a
+within-subject decoder learns the conduction delays anyway** — the only regime where
+measured CV could still earn its keep is **cross-subject / zero-shot transfer**.
+
+## 9d. Phase 9: cross-subject transfer — where CV finally helps
+
+Within-subject, a decoder learns the conduction delays from data, so measured CV is
+useless (§9b/§9c). The exception is **zero-shot transfer**: a decoder trained on
+source subjects and applied to a held-out target *cannot* learn the target's delays.
+Test (`scripts/run_transfer.py`): pseudo-subjects from real MC_Maze spikes with
+distinct *injected* conduction delays; leave-one-subject-out. Result
+([RESULTS.md](RESULTS.md) §7): aligning the target by its measured CV **improves
+zero-shot transfer** for both backbones (B2SS +0.076, GRU +0.035 R², consistent
+across seeds) — the **first regime where measured CV helps**. Honest scope: the
+conduction difference is injected/known (proof-of-mechanism, upper bound), the effect
+is modest, and a strong GRU without alignment still beats aligned-B2SS. **Reframed
+thesis: CV is a cross-subject conduction normaliser for transfer, not within-subject
+decoding information** — the confirmatory test needs a real cohort with a *measured*
+CV (none public — see [BACKGROUND.md](BACKGROUND.md) §9).
+
 ## 10. Risks the proposal flags
 
 - CV signal too weak to help (null H4) → dataset still yields the g-ratio atlas.

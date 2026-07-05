@@ -171,6 +171,54 @@ Ordered by severity. F1–F3 are correctness; F4–F6 are doc/rigor drift.
 - ☐ If after P1+P2 the CV gate shows no benefit on any real data, decide: publish the
   architecture + negative honestly, or hold for the wet-lab pilot. Don't force a claim.
 
+# PHASE 8 — CV as delay-alignment, not window-shrinking (improvement plan)
+
+_Why: the full runs showed the window-shrinking gate removes information — it hurts
+real continuous decoding and helps only where a CV→window law is planted. The
+information-**adding** use of CV is per-tract delay **alignment** (measured-CV
+analogue of learnable-delay SNNs, DCLS/Sun). This phase redesigns the mechanism and
+tests it cheaply on real spikes with an injected, known latency before any wet-lab._
+Plan file: `~/.claude/plans/elegant-noodling-liskov.md`.
+
+- ☑ **#1 Delay-alignment mechanism** (`b2ss/model.py`): `ChannelDelay` front-end,
+  differentiable per-channel fractional shift, full window preserved; config
+  `align_mode='none'|'learned'|'cv'`, orthogonal to `gate_mode`. Oracle-recovery test
+  passes; 18 tests green.
+- ☑ **#2 CV on a stronger backbone** (`b2ss/baselines.py`): `GRUDecoder` gained an
+  optional `ChannelDelay` front-end (`gru+cv-align`).
+- ☑ **#3 Injected-latency bridge** (`scripts/run_latency_bridge.py`, 5 seeds):
+  data-efficiency test. Result: measured-CV alignment gives at most a small,
+  **not-clearly-significant** (marginal CIs overlap) low-data prior on B2SS (+0.03 to
+  +0.13), **no** benefit on the strong GRU (which learns delays itself), and the GRU
+  dominates B2SS at every size. Redesign does NOT rescue the idea — see RESULTS.md §6.
+- ☑ **#4 Measured-CV dataset scouting** (done → BACKGROUND.md §9): **no public
+  dataset pairs a motor/BCI decode with a measured CV on the same subjects.** Closest:
+  CCEP-on-iEEG `ds004080` (direct CV, but task=stimulation), VEPCON/HCP (behavior +
+  dMRI proxy), F-TRACT (group-level CV prior). Justifies a dedicated acquisition.
+- ☑ **#5 Rigor + docs**: bridge run at 5 seeds with CIs; `results/latency_bridge.*`
+  written; RESULTS.md §6 + honesty ledger, PAPER_OUTLINE.md (revised go/no-go →
+  cross-subject transfer), BACKGROUND.md §9, BRIEF.md, README.md all updated. 18 tests green.
+- Guardrail honored: alignment did NOT clearly beat `none` → reported as a negative,
+  not forced. **Conclusion: measured (structural) CV does not help within-subject
+  decoding; the only untested regime worth pursuing is cross-subject/zero-shot transfer.**
+
+# PHASE 9 — Cross-subject / zero-shot transfer (the one untested regime)
+
+_Within-subject, a decoder learns the delays anyway (Phase 8). The only regime where
+measured CV could still help: zero-shot transfer to a held-out subject, whose delays
+the decoder cannot learn (never sees its training data)._ `scripts/run_transfer.py`.
+
+- ☑ Controlled proof-of-mechanism on REAL MC_Maze spikes (5 pseudo-subjects, 3 seeds):
+  measured-CV alignment **improves zero-shot transfer** — B2SS +0.076 (0.483→0.559),
+  GRU +0.035 (0.680→0.715), consistent across seeds. **First & only regime where CV
+  helps.** RESULTS §7. Qualifiers: modest (CIs overlap), shrinks with more source
+  subjects, GRU-none still beats aligned-B2SS, and the conduction diff is
+  injected/known (upper bound). `shift_channels` helper + test added; 19 tests green.
+- **Conclusion:** CV is a **cross-subject conduction normaliser for zero-shot
+  transfer**, not within-subject decoding information. Confirmatory next step (real
+  claim): a cohort with neural recordings + a *measured* per-subject CV — none exists
+  publicly (BACKGROUND §9), so it requires a dedicated acquisition.
+
 ## Out of scope here (wet-lab / hardware — see proposal)
 - ⊘ MRI g-ratio acquisition & MRtrix3/FSL/FreeSurfer pipeline
 - ⊘ TMS-EEG & sEEG acquisition; CCEP ground truth

@@ -187,6 +187,85 @@ correction — so the pre-registered §6 plan is runnable, not just described.
 
 ---
 
+## 6. Phase 8 — CV as delay-alignment (mechanism redesign)
+
+The gate *removes* information (window-shrinking), which is why it hurt real
+continuous decoding (§2). Phase 8 rebuilds the mechanism as delay-**alignment** —
+use each channel's conduction delay to time-align its input, full window preserved
+(`ChannelDelay`, `align_mode='cv'`) — and tests it on **real MC_Maze spikes with a
+known injected per-group latency** (`run_latency_bridge.py`), across training-set
+sizes, on both B2SS and a GRU. Velocity R², 5 seeds:
+
+| n_train | b2ss-none | b2ss-cv | gru-none | gru+cv-align |
+| --- | --- | --- | --- | --- |
+| 200 | −0.070 | −0.034 | −0.003 | 0.018 |
+| 600 | 0.130 | 0.264 | **0.380** | 0.313 |
+| 2000 | 0.497 | 0.521 | **0.700** | 0.658 |
+| 10000 | 0.609 | 0.638 | **0.742** | 0.704 |
+
+**Honest, CI-aware read (the auto-verdict "helps at low data" is too generous):**
+
+1. **A *fixed structural* delay is learnable from data.** An unaligned decoder just
+   absorbs it — so measured alignment can only help as a low-data prior, and only on
+   the weaker backbone.
+2. **On B2SS**, measured alignment gives a small positive point-estimate gap (+0.03
+   to +0.13, largest at n=600) — but the marginal 95% CIs of `cv` vs `none` **overlap
+   at every size**, so it is not clearly significant.
+3. **On the strong GRU backbone, alignment does *not* help** — `gru+cv-align` ≤
+   `gru-none` at n≥600 (the GRU learns the delays itself). And the **GRU dominates
+   B2SS at every size** (0.742 vs 0.638 at n=10000).
+
+**Verdict:** the redesign does **not** rescue the idea. Measured CV yields at most a
+small, not-clearly-significant prior benefit on a weaker decoder at low/moderate
+data, and nothing for a strong decoder. This *explains* the §2/§3 negatives: because
+CV is a fixed structural parameter, a within-subject decoder learns the conduction
+delays from data, so being told them adds little. The one regime not excluded is
+**cross-subject / zero-shot transfer** (a decoder that never saw the target
+subject's data, given that subject's measured CV) — the recommended next test.
+
+Figure: `results/latency_bridge.png`.
+
+## 7. Phase 9 — cross-subject / zero-shot transfer (the one positive regime)
+
+Within-subject, a decoder learns the conduction delays from data, so measured CV
+adds nothing (§2, §3, §6). The one regime where it *can't* learn them: **zero-shot
+transfer to a held-out subject** (the decoder never sees the target's training data).
+Test (`run_transfer.py`): 5 disjoint pseudo-subjects from real MC_Maze, each given a
+distinct **injected** per-group conduction delay; leave-one-subject-out zero-shot
+transfer, comparing no-alignment vs measured-CV alignment. Velocity R², 5 folds × 3
+seeds:
+
+| model | zero-shot transfer R² (mean [95% CI]) | CV-align gain |
+| --- | --- | --- |
+| gru-none | 0.680 [0.630, 0.729] | — |
+| gru+cv-align | 0.715 [0.676, 0.754] | **+0.035** |
+| b2ss-none | 0.483 [0.401, 0.565] | — |
+| b2ss+cv-align | 0.559 [0.501, 0.617] | **+0.076** |
+
+**This is the first — and only — regime where measured CV helps.** Aligning the
+held-out subject by its measured delays improves zero-shot transfer for *both*
+backbones, and the gain is **consistent across all 3 seeds** (GRU +0.040/+0.041/+0.035;
+B2SS +0.076/+0.091/+0.076). The mechanism is exactly the hypothesis: a decoder can't
+learn the target's delays from source data, so being told them (normalising the
+target into a common conduction frame) transfers better.
+
+**Honest qualifiers (do not overstate):**
+- The effect is **modest** — marginal CIs overlap (it's a small paired effect), and it
+  **shrinks as the source cohort grows** (more source subjects → more delay diversity
+  → the unaligned model learns partial delay-robustness; the 3-subject smoke gave
+  +0.13/+0.19, the 5-subject run +0.035/+0.076).
+- It does **not** make B2SS competitive: **gru-none (0.680) still beats
+  b2ss+cv-align (0.559)** — alignment helps a *given* decoder transfer, it doesn't win.
+- **Scope: the conduction difference is *injected and known*** — a proof-of-mechanism
+  and an upper bound, not evidence that real inter-subject differences are
+  conduction-dominated or that a *measured* (imperfect) CV would recover this. The
+  confirmatory test needs a real cohort with neural recordings + per-subject CV, which
+  BACKGROUND §9 shows does not exist publicly.
+
+**Reframed claim:** CV is not within-subject decoding information; its demonstrated
+value is as a **cross-subject conduction normaliser for zero-shot transfer**. Figure:
+`results/transfer.png`.
+
 ## Honesty ledger
 
 - The synthetic ablation proves the *mechanism* (a CV-derived window helps when a
@@ -199,6 +278,15 @@ correction — so the pre-registered §6 plan is runnable, not just described.
   *measured* CV).
 - B2SS is a real decoder (beats linear Ridge) but is not competitive with a GRU
   (intracortical) or with EEGNet/CSP (EEG) on these tasks.
+- **Phase 8**: reframing CV as delay-*alignment* also fails within-subject — a *fixed
+  structural* delay is learnable from data, so measured CV adds at most a small,
+  not-clearly-significant low-data prior.
+- **Phase 9 (the positive)**: in *zero-shot cross-subject transfer* — where the decoder
+  cannot learn the target's delays — measured-CV alignment **does** help (B2SS +0.076,
+  GRU +0.035 R², consistent across seeds). CV's real value is **cross-subject
+  conduction normalisation, not within-subject information**. Caveat: the conduction
+  difference is injected/known (proof-of-mechanism, upper bound); a strong GRU without
+  alignment still beats aligned-B2SS; needs a real measured-CV cohort to confirm.
 - The corrected power analysis is about the *proposal's* design, not a new result.
 - None of this substitutes for the wet-lab study (MRI g-ratio, TMS-EEG, sEEG,
   closed-loop prosthetic control) — the only setting with a measured CV to test.

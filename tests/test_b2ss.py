@@ -62,6 +62,34 @@ def test_gru_and_ridge_baselines():
     assert ridge_r2(X[:450], Y[:450], X[450:], Y[450:], alpha=0.1) > 0.9
 
 
+def test_inject_group_latency():
+    from b2ss.intracortical import inject_group_latency
+    spikes = np.random.default_rng(0).random((120, 16)).astype("float32")
+    out, ad = inject_group_latency(spikes, n_groups=4, max_delay_bins=5, seed=1)
+    assert out.shape == spikes.shape and ad.shape == (16,)
+    assert (ad <= 0).all() and (ad >= -5).all()          # undo delays are non-positive
+    c = int(np.argmin(ad))                                # most-delayed channel
+    d = int(-ad[c])
+    if d > 0:                                             # out[t]=in[t-d]
+        assert np.allclose(out[d:, c], spikes[:120 - d, c])
+
+
+def test_shift_channels_alignment():
+    from b2ss.intracortical import inject_group_latency, shift_channels
+    spikes = np.random.default_rng(0).random((200, 12)).astype("float32")
+    inj, align = inject_group_latency(spikes, n_groups=3, max_delay_bins=6, seed=2)
+    recovered = shift_channels(inj, align)               # undo -> common frame
+    # interior recovers the original (edges lost to zero-fill)
+    assert np.allclose(recovered[10:190], spikes[10:190], atol=1e-5)
+
+
+def test_gru_channel_delay():
+    import torch
+    from b2ss.baselines import GRUDecoder
+    g = GRUDecoder(16, align_mode="cv", max_delay_bins=8)
+    assert g(torch.randn(4, 16, 20), delays=torch.zeros(16)).shape == (4, 2)
+
+
 def test_maze_windows():
     from b2ss.intracortical import MazeData, make_windows
     n = 200

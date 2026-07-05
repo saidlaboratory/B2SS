@@ -86,6 +86,10 @@ python scripts/run_intracortical_benchmark.py
 # Robustness: is the CV-gate benefit a knife-edge or robust to hyperparameters?
 python scripts/run_sensitivity.py
 
+# Phase 8: CV as delay-ALIGNMENT (not window-shrinking). Inject a known latency into
+# real MC_Maze spikes; does measured-delay alignment recover decoding? (data-efficiency)
+python scripts/run_latency_bridge.py
+
 # Real-time inference latency vs the proposal's <50 ms budget.
 python scripts/bench_latency.py --proposal-size
 
@@ -121,6 +125,8 @@ scripts/
   run_real_benchmark.py         real EEG: B2SS vs EEGNet/CSP (multi-seed)
   run_intracortical_benchmark.py real intracortical velocity R² vs GRU/Ridge
   run_sensitivity.py            hyperparameter robustness of the CV-gate benefit
+  run_latency_bridge.py         Phase-8 delay-alignment on real spikes + injected latency
+  run_transfer.py               Phase-9 cross-subject zero-shot transfer with measured CV
   bench_latency.py              inference latency vs 50 ms budget
   reproduce.py                  one command → all results + figures
 tests/

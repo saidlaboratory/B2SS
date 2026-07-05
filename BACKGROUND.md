@@ -263,6 +263,38 @@ accuracy on BCI IV-2a (4-class) is ~77–83% (CTNet 82.5%, EEGNet ~67–77%, FBC
 
 ---
 
+## 9. Measured-CV data: does a public paired dataset exist?
+
+The decisive experiment — does a *measured* conduction velocity improve *decoding*
+on the same subjects — needs a dataset pairing (A) decodable neural recordings with
+(B) a per-subject/per-tract CV correlate. A verified scan of OpenNeuro, DANDI,
+PhysioNet, HCP, and the microstructure archives found: **no public dataset cleanly
+pairs a motor/BCI decoding task with a measured CV on the same subjects.** The
+closest options, each a compromise on one axis:
+
+- **CCEP on iEEG — Utrecht RESPect, OpenNeuro `ds004080`** (74 patients). Single-pulse
+  stimulation gives *direct* per-subject cortical conduction velocity on the very
+  electrodes recorded (van Blooijs et al., *Nat Neurosci* 2023). Strongest CV signal,
+  but the "task" is stimulation, not behavior — tests "does measured CV predict
+  neural responses," not motor decoding.
+- **EEG + diffusion MRI — VEPCON `ds003505`** (20 subjects; visual-discrimination
+  behavior + DWI/FA on the same people) and **HCP Young-Adult MEG** (95 subjects with
+  a motor task + dMRI). Real behavior, but CV is a diffusion *proxy*, and the tasks
+  are perceptual/coarse-motor.
+- **F-TRACT** CCEP atlas (780 patients) gives CV/delay *norms* but only group-level in
+  common space — usable as a *prior* on plausible CV ranges, not per-subject data.
+- Microstructure-rich sets (MICA-MICs, LEMON) have g-ratio-grade CV proxies but **no
+  decodable task**.
+
+**Bottom line:** the exact pairing B2SS needs does not exist publicly — itself a
+clean justification for a dedicated acquisition (decoding + CCEP/dMRI CV in one
+cohort). Cheap prototypes today: `ds004080` for "measured CV carries decodable
+information," VEPCON/HCP for "dMRI-CV proxy helps a behavioral decode." (Verified via
+the associated *Scientific Data* / *Nature Neuroscience* papers and HCP docs;
+OpenNeuro SPDX licenses default to CC0 but should be confirmed per version page.)
+
+---
+
 ## Citation accuracy notes
 
 Corrections to the **proposal text/reference list** (the underlying science holds;

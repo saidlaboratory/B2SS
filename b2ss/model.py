@@ -41,6 +41,7 @@ CV_POP_SCALE = 22.5       # m/s, maps plausible CV range to ~[-1, 1]
 CV_SHRINK_SD = 10.0       # m/s, CV-estimate SD at which precision weight = 0.5
 
 GATE_MODES = ("cv", "learned", "fixed", "none")
+ALIGN_MODES = ("none", "learned", "cv")   # delay-alignment front-end (Phase 8)
 
 
 @dataclass
@@ -59,12 +60,15 @@ class DecoderConfig:
     tau_max_ms: float = 100.0
     fixed_tau_ms: float = 60.0     # used by gate_mode='fixed'
     gate_mode: str = "cv"
+    align_mode: str = "none"       # delay-alignment front-end: 'none'|'learned'|'cv'
+    max_delay_bins: float = 10.0   # +/- range for channel delays (Phase 8)
     task: str = "regression"       # 'regression' | 'classification'
     n_out: int = N_KIN             # regression targets
     n_classes: int = 2             # classification classes
 
     def __post_init__(self):
         assert self.gate_mode in GATE_MODES, self.gate_mode
+        assert self.align_mode in ALIGN_MODES, self.align_mode
         assert self.task in ("regression", "classification")
         assert self.win % self.patch == 0, "win must be divisible by patch"
 
@@ -82,6 +86,49 @@ def proposal_config(**kw) -> DecoderConfig:
     base = dict(d_model=256, nhead=8, num_layers=4, dim_ff=256)
     base.update(kw)
     return DecoderConfig(**base)
+
+
+class ChannelDelay(nn.Module):
+    """Per-channel temporal delay-alignment (Phase 8). Shifts each channel's time
+    series by delta_c bins via differentiable linear interpolation, PRESERVING the
+    full window (unlike the recency gate, this *adds* alignment info rather than
+    masking history). Delays come from measured CV ('cv'), are learned ('learned'),
+    or are identity ('none'). This is the measured-CV analogue of learnable-delay
+    SNNs (DCLS, Sun 2023).
+
+    Convention: output[:, c, t] = input[:, c, t - delta_c] (a positive delta delays
+    the channel), with linear interpolation for fractional delta and edge clamping.
+    """
+
+    def __init__(self, n_chan: int, max_delay: float, mode: str):
+        super().__init__()
+        self.n_chan, self.max_delay, self.mode = n_chan, float(max_delay), mode
+        if mode == "learned":
+            self.raw = nn.Parameter(torch.zeros(n_chan))   # delta = tanh(raw)*max_delay
+
+    def _delays(self, delays, device) -> torch.Tensor:
+        if self.mode == "learned":
+            return torch.tanh(self.raw) * self.max_delay          # (C,)
+        if self.mode == "cv":
+            if delays is None:
+                raise ValueError("align_mode='cv' needs per-channel `delays` (bins)")
+            d = torch.as_tensor(delays, dtype=torch.float32, device=device).reshape(-1)
+            return d.clamp(-self.max_delay, self.max_delay)       # (C,)
+        return None                                               # 'none'
+
+    def forward(self, x: torch.Tensor, delays=None) -> torch.Tensor:
+        if self.mode == "none":
+            return x
+        B, C, W = x.shape
+        d = self._delays(delays, x.device)                        # (C,)
+        t = torch.arange(W, device=x.device, dtype=x.dtype)
+        pos = (t[None, :] - d[:, None]).clamp(0, W - 1)           # (C, W) source index
+        f = pos.floor().long()
+        f1 = (f + 1).clamp(max=W - 1)
+        r = (pos - f.to(x.dtype)).unsqueeze(0)                    # (1, C, W)
+        idx = f.unsqueeze(0).expand(B, C, W)
+        idx1 = f1.unsqueeze(0).expand(B, C, W)
+        return (1 - r) * torch.gather(x, 2, idx) + r * torch.gather(x, 2, idx1)
 
 
 class _EncoderLayer(nn.Module):
@@ -111,6 +158,8 @@ class B2SSDecoder(nn.Module):
         super().__init__()
         self.cfg = cfg or DecoderConfig()
         c = self.cfg
+        # Phase 8: optional per-channel delay-alignment front-end (before patch-embed).
+        self.align = ChannelDelay(c.n_chan, c.max_delay_bins, c.align_mode)
         # Conv patch-embed over time: kernel=stride=patch. patch=1 => per-timepoint linear.
         self.embed = nn.Conv1d(c.n_chan, c.d_model, kernel_size=c.patch, stride=c.patch)
         self.pos = nn.Parameter(torch.zeros(1, c.n_tokens, c.d_model))
@@ -182,7 +231,9 @@ class B2SSDecoder(nn.Module):
             return m.repeat_interleave(c.nhead, dim=0)               # (B*nhead,T,T)
         return bias[0].unsqueeze(0).expand(T, T)                     # (T,T) shared
 
-    def forward(self, x: torch.Tensor, cv=None, cv_sd=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, cv=None, cv_sd=None, delays=None) -> torch.Tensor:
+        # Phase 8: delay-align channels first (identity unless align_mode set).
+        x = self.align(x, delays)
         # x: (B, C, WIN) -> patch-embed -> tokens (B, T, d_model)
         h = self.embed(x).transpose(1, 2) + self.pos
         B = x.shape[0]
@@ -260,8 +311,27 @@ def _selfcheck() -> None:
 
     b2ss(x, cv).pow(2).mean().backward()
     assert b2ss.w_cv.grad is not None and torch.isfinite(b2ss.w_cv.grad)
+
+    # -- Phase 8: delay-alignment ------------------------------------------- #
+    with torch.no_grad():
+        sig = torch.randn(1, 2, 50)
+        dl = ChannelDelay(2, max_delay=8, mode="cv")
+        # integer delay: output[t] = input[t-2]
+        s2 = dl(sig, delays=torch.tensor([2.0, 0.0]))
+        assert torch.allclose(s2[0, 0, 10:40], sig[0, 0, 8:38], atol=1e-5)
+        assert torch.allclose(s2[0, 1], sig[0, 1])              # 0 delay = identity
+        # oracle recovery: delay by d then by -d restores the interior
+        back = dl(dl(sig, delays=torch.tensor([3.0, 0.0])), delays=torch.tensor([-3.0, 0.0]))
+        assert (back[0, 0, 10:40] - sig[0, 0, 10:40]).abs().mean() < 1e-4
+    # align variants forward + learned-delay grad flows
+    ac = B2SSDecoder(DecoderConfig(align_mode="cv", gate_mode="none"))
+    assert ac(x, delays=torch.zeros(N_CHAN)).shape == (8, N_KIN)
+    al = B2SSDecoder(DecoderConfig(align_mode="learned", gate_mode="none"))
+    al(x).pow(2).mean().backward()
+    assert al.align.raw.grad is not None and torch.isfinite(al.align.raw.grad).all()
+
     print(f"model.py self-check OK: params cv={pb} learned={pc} (delta {abs(pb-pc)}); "
-          f"modes={list(v)}; het+uncertainty+clf paths OK")
+          f"modes={list(v)}; align={list(ALIGN_MODES)}; het+uncertainty+clf+delay paths OK")
 
 
 if __name__ == "__main__":

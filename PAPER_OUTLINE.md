@@ -27,9 +27,15 @@ supported by the evidence and will (rightly) be rejected.
    advantage shrinks with data; on heterogeneous-CV data (CV varies per context) it
    is *genuine information* a learned constant cannot capture, and the gap persists.
    Backed by a sensitivity sweep showing robustness across hyperparameters.
-3. **Honest real-data status**: on two public datasets *without measured CV*, the
-   gate gives no benefit — reported plainly, not buried. This is the paper's
-   integrity anchor and its call for the measured-CV experiment.
+3. **Honest real-data status**: within-subject, the gate/alignment gives no benefit
+   on either public dataset — reported plainly. Because a data-trained decoder learns
+   the (fixed structural) conduction delays, measured CV adds nothing within-subject.
+4. **The positive result — CV as a cross-subject transfer normaliser.** In zero-shot
+   transfer (decoder never sees the target's data, so it *cannot* learn its delays),
+   aligning by the target's measured CV improves transfer on real MC_Maze spikes with
+   an injected conduction difference (GRU +0.13, B2SS +0.19 R²). This reframes CV's
+   value from "within-subject information" to "cross-subject conduction normalisation"
+   — a sharper, evidence-backed claim (proof-of-mechanism; injected difference).
 
 ## 3. Positioning / novelty (vs prior work — see BACKGROUND.md)
 
@@ -68,7 +74,18 @@ supported by the evidence and will (rightly) be rejected.
   recency window discards useful history; a plain GRU is stronger), and the
   reaction-time context is not a conduction-velocity signal.
 - No **measured** CV exists in any real dataset used here; the decisive test
-  (measured CV → decoding benefit) requires the wet-lab pilot.
+  (measured CV → decoding benefit) requires the wet-lab pilot. A verified public-data
+  scan (BACKGROUND §9) found **no dataset pairing a decode task with a measured CV on
+  the same subjects** — this gap is real and justifies a dedicated acquisition.
+- **Phase 8 (redesign):** we reframed CV from window-*shrinking* (which removes
+  history and hurt continuous decoding) to delay-*alignment* (which adds it), and
+  tested it on real spikes with an *injected, known* latency (`run_latency_bridge.py`).
+  Finding: a **fixed structural** per-channel delay is *learnable from data*, so
+  measured-delay alignment gives at most a marginal low-data prior benefit and none
+  for a well-trained decoder. This sharpens the core negative: because CV is (by the
+  proposal's own framing) a fixed structural parameter, a within-subject decoder
+  simply learns the delays, and being told them adds little. CV's plausible value is
+  therefore **cross-subject/zero-shot transfer or low-data**, not within-subject info.
 - Small N (EEG 8 subjects; one intracortical session).
 
 ## 6. Go / no-go (P7) — recommendation
@@ -84,9 +101,26 @@ Two defensible paths; pick based on appetite:
   dataset pairing neural recordings with a structural CV/g-ratio proxy) and only
   then claim CV helps real decoding. Higher impact, much higher cost/time.
 
-**Recommendation:** if the goal is a real scientific claim, **hold** — the current
-evidence does not show CV helping any real decode, and a methods paper resting on a
-synthetic mechanism + two negatives is thin. If the goal is to stake the idea and
-release the framework, **publish now** with the framing above and the negatives
-front-and-center. Do **not** publish anything claiming CV improves real BCI
-decoding on the current evidence.
+**Recommendation (updated after Phase 9 — the transfer result changes the picture).**
+Within-subject, CV helps no real decode (EEG proxy, intracortical gate, Phase-8
+bridge), because a decoder learns the delays from data. **But in the cross-subject
+zero-shot regime — where the decoder cannot learn the target's delays — measured-CV
+alignment DID help** on real MC_Maze spikes with an injected conduction difference
+(GRU +0.13, B2SS +0.19 R²; RESULTS §7). So the honest, evidence-backed frame is:
+
+- **The claim to make:** CV is not within-subject decoding information (a data-trained
+  decoder learns the delays); its value is as a **cross-subject conduction
+  normaliser for zero-shot transfer**. That is a sharper, more defensible, and more
+  novel claim than the original "CV improves decoding," and it is *supported* by a
+  proof-of-mechanism on real neural data.
+- **The honest caveat:** the transfer result uses an *injected, known* conduction
+  difference — an upper bound / mechanism proof, not evidence that real inter-subject
+  differences are conduction-dominated. The paper must state this and call for the
+  confirmatory step below.
+
+**Confirmatory next step (for a full claim):** cross-subject transfer where the
+conduction difference is *real and measured*, not injected — i.e. a cohort with both
+neural recordings and a per-subject CV/g-ratio. BACKGROUND §9 shows no such public
+dataset exists, so this is the justified wet-lab/acquisition ask. Until then, publish
+the transfer-normalisation mechanism with the injected-CV proof and the explicit
+caveat; do **not** claim CV improves within-subject decoding.

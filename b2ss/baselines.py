@@ -66,19 +66,24 @@ def eegnet_param_count(n_chan=64, n_time=480, n_classes=2) -> int:
 
 class GRUDecoder(nn.Module):
     """Recurrent baseline for continuous kinematic decoding (the LFADS/POSSM family
-    is intracortical-RNN-based; this is the lightweight stand-in)."""
+    is intracortical-RNN-based; this is the lightweight stand-in). Optionally carries
+    a ChannelDelay front-end (Phase 8) so the CV/delay idea can ride a *competitive*
+    decoder — the "does CV help a good decoder?" test."""
 
     def __init__(self, n_chan: int, n_out: int = 2, hidden: int = 128,
-                 layers: int = 2, dropout: float = 0.2):
+                 layers: int = 2, dropout: float = 0.2,
+                 align_mode: str = "none", max_delay_bins: float = 10.0):
         super().__init__()
+        from .model import ChannelDelay
         self.cfg = SimpleNamespace(task="regression", n_out=n_out)
+        self.align = ChannelDelay(n_chan, max_delay_bins, align_mode)
         self.gru = nn.GRU(n_chan, hidden, layers, batch_first=True,
                           dropout=dropout if layers > 1 else 0.0)
         self.drop = nn.Dropout(dropout)
         self.head = nn.Linear(hidden, n_out)
 
-    def forward(self, x, cv=None, cv_sd=None):     # x: (B, C, W)
-        o, _ = self.gru(x.transpose(1, 2))         # (B, W, hidden)
+    def forward(self, x, cv=None, cv_sd=None, delays=None):   # x: (B, C, W)
+        o, _ = self.gru(self.align(x, delays).transpose(1, 2))   # (B, W, hidden)
         return self.head(self.drop(o[:, -1]))
 
 
