@@ -79,6 +79,79 @@ def load_maze(bin_s: float = BIN_S, path: Path = NWB_PATH) -> MazeData:
     return d
 
 
+SESSIONS = {
+    "small": Path.home() / "b2ss_data" / "000140" / "mc_maze_small_train.nwb",
+    "medium": Path.home() / "b2ss_data" / "000139" / "mc_maze_medium_train.nwb",
+    "large": Path.home() / "b2ss_data" / "000138" / "mc_maze_large_train.nwb",
+}
+
+
+def _unit_electrodes(units) -> np.ndarray:
+    """Per-unit electrode row-index into the electrodes table. The electrodes table is
+    the fixed array layout, ordered identically across MC_Maze sessions (same probe),
+    so this row-index is a stable channel identity across days. Returns int array
+    (len = n_units) or NaN where a unit has no single electrode."""
+    data = np.asarray(units.electrodes.data[:])
+    if len(data) == len(units.id):
+        return data.astype(float)                    # one electrode-row per unit
+    idx = np.asarray(units.electrodes.index[:])      # cumulative boundaries
+    starts = np.concatenate([[0], idx[:-1]])
+    out = np.full(len(units.id), np.nan)
+    for i, (a, b) in enumerate(zip(starts, idx)):
+        if b - a >= 1:
+            out[i] = float(data[a])                  # first electrode for the unit
+    return out
+
+
+def common_electrodes(names=("small", "medium", "large")) -> np.ndarray:
+    """Electrode ids present in every listed session (the shared channel set)."""
+    from pynwb import NWBHDF5IO
+    sets = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for n in names:
+            nwb = NWBHDF5IO(str(SESSIONS[n]), "r", load_namespaces=True).read()
+            el = _unit_electrodes(nwb.units)
+            sets.append(set(np.unique(el[np.isfinite(el)]).astype(int)))
+    return np.array(sorted(set.intersection(*sets)))
+
+
+def load_session(name: str, keep_electrodes: np.ndarray, bin_s: float = BIN_S) -> MazeData:
+    """Load one MC_Maze session, binning spikes PER ELECTRODE (summing sorted units on
+    the same electrode) restricted to `keep_electrodes` — giving channels that
+    correspond across sessions for a real cross-session transfer test."""
+    from pynwb import NWBHDF5IO
+    from scipy.stats import binned_statistic
+    keep = np.asarray(keep_electrodes)
+    col = {e: i for i, e in enumerate(keep)}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        nwb = NWBHDF5IO(str(SESSIONS[name]), "r", load_namespaces=True).read()
+        hv = nwb.processing["behavior"]["hand_vel"]
+        vt, vd = np.asarray(hv.timestamps[:]), np.asarray(hv.data[:], dtype=np.float64)
+        edges = np.arange(0.0, float(vt[-1]) + bin_s, bin_s)
+        n = len(edges) - 1
+        vel = np.nan_to_num(np.stack(
+            [binned_statistic(vt, vd[:, k], "mean", bins=edges)[0] for k in (0, 1)], 1)).astype(np.float32)
+        units = nwb.units
+        uel = _unit_electrodes(units)
+        spikes = np.zeros((n, len(keep)), dtype=np.float32)
+        for i in range(len(units.id)):
+            if np.isfinite(uel[i]) and int(uel[i]) in col:
+                spikes[:, col[int(uel[i])]] += np.histogram(
+                    np.asarray(units["spike_times"][i]), bins=edges)[0]
+        tr = nwb.trials
+        centers = (np.arange(n) + 0.5) * bin_s
+        split = np.full(n, -1, np.int8)
+        rt = np.full(n, np.nan, np.float32)
+        for s0, s1, sp, r in zip(tr["start_time"][:], tr["stop_time"][:],
+                                 tr["split"][:].astype(str), tr["rt"][:].astype(float)):
+            m = (centers >= s0) & (centers < s1)
+            split[m] = 0 if sp == "train" else 1
+            rt[m] = r
+    return MazeData(spikes, vel, split, rt, 1.0 / bin_s)
+
+
 def inject_group_latency(spikes: np.ndarray, n_groups: int = 8,
                          max_delay_bins: int = 8, seed: int = 0):
     """Inject a KNOWN per-group conduction latency into real binned spikes (Phase 8

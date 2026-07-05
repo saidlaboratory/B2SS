@@ -14,6 +14,7 @@ from b2ss import train as train_mod
 from b2ss import proxies as proxies_mod
 from b2ss import stats as stats_mod
 from b2ss import baselines as baselines_mod
+from b2ss import transfer as transfer_mod
 
 
 def test_cv_selfcheck():
@@ -46,6 +47,22 @@ def test_stats_selfcheck():
 
 def test_baselines_selfcheck():
     baselines_mod._selfcheck()
+
+
+def test_transfer_selfcheck():
+    transfer_mod._selfcheck()
+
+
+def test_transfer_wraps_and_freezes_real_decoder():
+    import torch
+    from b2ss.baselines import GRUDecoder
+    from b2ss.transfer import TransferNormalizer
+    dec = GRUDecoder(16, n_out=2)
+    norm = TransferNormalizer(dec, n_chan=16, n_groups=4, max_delay=8)
+    assert all(not p.requires_grad for p in norm.decoder.parameters())   # frozen
+    assert norm(torch.randn(5, 16, 20)).shape == (5, 2)                   # forward works
+    # only the aligner is trainable
+    assert all(p is norm.aligner.delta for p in norm.trainable_parameters())
 
 
 def test_gru_and_ridge_baselines():

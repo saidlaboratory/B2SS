@@ -88,6 +88,21 @@ def proposal_config(**kw) -> DecoderConfig:
     return DecoderConfig(**base)
 
 
+def fractional_shift(x: torch.Tensor, d: torch.Tensor) -> torch.Tensor:
+    """Differentiable per-channel temporal shift: out[:, c, t] = x[:, c, t - d_c],
+    linear interpolation for fractional d, edge-clamped. x: (B, C, W); d: (C,).
+    Shared primitive for ChannelDelay and the Phase-10 transfer aligner."""
+    B, C, W = x.shape
+    t = torch.arange(W, device=x.device, dtype=x.dtype)
+    pos = (t[None, :] - d[:, None]).clamp(0, W - 1)          # (C, W) source index
+    f = pos.floor().long()
+    f1 = (f + 1).clamp(max=W - 1)
+    r = (pos - f.to(x.dtype)).unsqueeze(0)                   # (1, C, W)
+    idx = f.unsqueeze(0).expand(B, C, W)
+    idx1 = f1.unsqueeze(0).expand(B, C, W)
+    return (1 - r) * torch.gather(x, 2, idx) + r * torch.gather(x, 2, idx1)
+
+
 class ChannelDelay(nn.Module):
     """Per-channel temporal delay-alignment (Phase 8). Shifts each channel's time
     series by delta_c bins via differentiable linear interpolation, PRESERVING the
@@ -119,16 +134,7 @@ class ChannelDelay(nn.Module):
     def forward(self, x: torch.Tensor, delays=None) -> torch.Tensor:
         if self.mode == "none":
             return x
-        B, C, W = x.shape
-        d = self._delays(delays, x.device)                        # (C,)
-        t = torch.arange(W, device=x.device, dtype=x.dtype)
-        pos = (t[None, :] - d[:, None]).clamp(0, W - 1)           # (C, W) source index
-        f = pos.floor().long()
-        f1 = (f + 1).clamp(max=W - 1)
-        r = (pos - f.to(x.dtype)).unsqueeze(0)                    # (1, C, W)
-        idx = f.unsqueeze(0).expand(B, C, W)
-        idx1 = f1.unsqueeze(0).expand(B, C, W)
-        return (1 - r) * torch.gather(x, 2, idx) + r * torch.gather(x, 2, idx1)
+        return fractional_shift(x, self._delays(delays, x.device))
 
 
 class _EncoderLayer(nn.Module):

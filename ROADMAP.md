@@ -232,14 +232,18 @@ alignment source = full spectrum (zero-shot measured-CV / few-shot / unsupervise
 benchmarks = staged intracortical → EEG(MOABB); novelty = temporal/conduction axis,
 spatial alignment borrowed.
 
-- ☐ **P10.1 Core module** `b2ss/transfer.py`: `ConductionDelayAligner` (grouped
-  low-dim δ), `DelayFitter` (3 modes), `TransferNormalizer` (wraps a FROZEN decoder);
-  + unit tests (oracle δ-recovery, frozen-decoder invariance, few/unsup fit).
-- ☐ **P10.2 Intracortical spectrum benchmark** `scripts/run_transfer_modes.py`:
-  accuracy-vs-target-information curve (zero→unlabeled→few-shot) vs no-norm and full
-  retraining; baselines incl. learned-delay + a TTA method. Multi-seed, CIs.
-- ☐ **P10.3 Real multi-session intracortical**: confirm a dataset (MC_RTT /
-  Makin–Flint multi-day); loader; non-injected transfer test.
+- ☑ **P10.1 Core module** `b2ss/transfer.py`: `ConductionDelayAligner` (grouped
+  low-dim δ, shared `fractional_shift`), 3-mode `DelayFitter` (measured / few-shot /
+  unsupervised CORAL), `TransferNormalizer` (freezes decoder). Self-check: zero-shot
+  recovers, few-shot recovers δ≈−known, unsup converges, decoder frozen. 21 tests green.
+- ◐ **P10.2 Intracortical spectrum benchmark** `scripts/run_transfer_modes.py`:
+  canonicalise source → freeze → vary target alignment (no-norm / zero-shot / unsup /
+  few-shot(n) / free-delay ablation / full-retrain); calibration-cost curve, multi-seed.
+  _(smoke running)_
+- ◐ **P10.3 Real cross-session intracortical**: MC_Maze S/M/L are **4 real sessions of
+  monkey Jenkins** (different days) — Medium(000139)+Large(000138) downloaded. Caveat:
+  unit identity differs across days (breaks per-channel correspondence) → honest
+  stress test, not a clean conduction-normaliser test. To wire + report honestly.
 - ☐ **P10.4 EEG breadth** `scripts/run_moabb_transfer.py`: MOABB cross-session &
   cross-subject; conduction module's **marginal delta on top of spatial alignment**.
 - ☐ **P10.5 Docs + honest reporting**: whatever the numbers say; bound the claim if
