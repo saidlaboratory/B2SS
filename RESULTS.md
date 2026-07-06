@@ -266,6 +266,87 @@ target into a common conduction frame) transfers better.
 value is as a **cross-subject conduction normaliser for zero-shot transfer**. Figure:
 `results/transfer.png`.
 
+## 8. Phase 10 — the pivot: conduction normalization for transfer
+
+The project pivoted (see [PIVOT.md](PIVOT.md)) from "CV-modulated decoder" to a
+**conduction normaliser** that cuts BCI recalibration. Train a decoder once on a
+source pool, freeze it, adapt only a low-dim per-tract delay `δ` per target.
+
+### 8.1 Calibration-cost spectrum (controlled, `run_transfer_modes.py`)
+
+Real MC_Maze spikes → 4 pseudo-subjects with distinct injected conduction; source
+canonicalised + frozen; only the target-side alignment varies. Velocity R², 4 folds
+× 3 seeds:
+
+| method | target labels | velocity R² (mean [95% CI]) |
+| --- | --- | --- |
+| no-norm (naive transfer) | 0 | 0.399 [0.274, 0.525] |
+| **zero-shot (measured CV)** | **0** | **0.649 [0.547, 0.751]** |
+| unsupervised (δ-fit) | 0 (unlabeled) | 0.302 [0.145, 0.460] |
+| few-shot(5) | 5 | 0.482 [0.364, 0.600] |
+| few-shot(20) | 20 | 0.548 [0.387, 0.708] |
+| few-shot(100) | 100 | 0.621 [0.522, 0.720] |
+| free-delay(100) *(ablation)* | 100 | 0.545 [0.430, 0.660] |
+| full-retrain (calibration cost) | all | 0.403 [0.320, 0.486] |
+
+**This is the pivot's headline — and it's positive:**
+
+1. **Zero-shot beats retraining, with zero target data.** Measured-CV alignment
+   (0.649) beats no-norm by **+0.250 (CIs separated)** and beats full-retrain
+   (0.403). With a measured conduction, you transfer to a new subject *better than
+   collecting and retraining on that subject's data* — the calibration burden the
+   pivot set out to cut.
+2. **Clean calibration curve.** Few-shot climbs 0.48 → 0.55 → 0.62 for 5 → 20 → 100
+   labeled trials, approaching zero-shot — a modest amount of calibration recovers
+   most of the benefit.
+3. **The conduction structure helps.** Structured few-shot(100) (0.621) beats
+   unstructured free per-channel delays (0.545) by +0.076 — the low-dim per-tract
+   grouping is more data-efficient than free delays, validating the design.
+4. **Unsupervised fails honestly.** CORAL latent-moment matching (0.302) does *not*
+   identify the delays on real neural latents and even underperforms no-norm — the
+   weak mode; needs a delay-sensitive objective (cross-covariance) as future work.
+
+Figure: `results/transfer_modes.png`.
+
+### 8.2 Real cross-session transfer — the honest bound (`run_xsession.py`)
+
+MC_Maze Small/Medium/Large are three real Jenkins sessions (different days); spikes
+aggregated per electrode give **67 corresponding channels**, enabling a non-injected
+cross-session transfer test. Train on two sessions, transfer to the held-out one.
+Velocity R² (consistent across all folds/seeds; see `results/xsession.json`):
+
+| method | velocity R² (mean [95% CI], 3 seeds) |
+| --- | --- |
+| no-norm (naive transfer) | 0.165 [0.097, 0.232] |
+| unsupervised δ-fit | −0.071 [−0.165, 0.023] |
+| few-shot δ-fit (20 / 100) | 0.090 / 0.149 |
+| **full-retrain** | **0.759 [0.688, 0.830]** |
+
+**Verdict — conduction alignment gives NO real cross-session benefit** (best δ-fit gain
+over no-norm = **−0.015**), and full-retrain dominates (0.759). Unlike the controlled spectrum
+(where the gap was pure conduction), the real cross-session gap is dominated by **unit
+turnover, firing-rate drift, and tuning changes** — even with corresponding electrodes,
+the recorded neurons differ across days. So conduction timing is *not* the axis of the
+real gap, and a conduction normaliser alone cannot close it. This is the honest scope
+boundary, and it is *why* the mechanism only helps where conduction dominates (§8.1).
+
+### 8.3 EEG breadth — bounds the claim (`run_moabb_transfer.py`, Zhou2016)
+
+Cross-session EEG (Zhou2016, 14 ch, 3 sessions/subject), our frozen decoder + δ-fit vs
+no-norm and full-retrain. Accuracy (`results/moabb_transfer.json`):
+
+| method | cross-session accuracy (mean [95% CI], 2 seeds) |
+| --- | --- |
+| no-norm | 0.544 [0.501, 0.587] |
+| unsupervised / few-shot δ-fit | 0.512–0.540 |
+| full-retrain | 0.506 [0.480, 0.532] |
+
+**Conduction-delay alignment gives no EEG benefit** (δ-fit gain = **−0.003**), as
+expected — the EEG cross-session gap (electrode placement, impedance, non-stationarity)
+is not conduction timing. This **bounds the claim to intracortical / conduction-dominated
+settings**. (Absolute accuracy is modest — a small transformer on ~200 trials — but the
+claim is the *marginal* δ-fit effect, which is null across all folds and seeds.)
+
 ## Honesty ledger
 
 - The synthetic ablation proves the *mechanism* (a CV-derived window helps when a

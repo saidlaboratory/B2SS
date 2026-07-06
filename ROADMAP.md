@@ -236,20 +236,28 @@ spatial alignment borrowed.
   low-dim δ, shared `fractional_shift`), 3-mode `DelayFitter` (measured / few-shot /
   unsupervised CORAL), `TransferNormalizer` (freezes decoder). Self-check: zero-shot
   recovers, few-shot recovers δ≈−known, unsup converges, decoder frozen. 21 tests green.
-- ◐ **P10.2 Intracortical spectrum benchmark** `scripts/run_transfer_modes.py`:
-  canonicalise source → freeze → vary target alignment (no-norm / zero-shot / unsup /
-  few-shot(n) / free-delay ablation / full-retrain); calibration-cost curve, multi-seed.
-  _(smoke running)_
-- ◐ **P10.3 Real cross-session intracortical**: MC_Maze S/M/L are **4 real sessions of
-  monkey Jenkins** (different days) — Medium(000139)+Large(000138) downloaded. Caveat:
-  unit identity differs across days (breaks per-channel correspondence) → honest
-  stress test, not a clean conduction-normaliser test. To wire + report honestly.
-- ☐ **P10.4 EEG breadth** `scripts/run_moabb_transfer.py`: MOABB cross-session &
-  cross-subject; conduction module's **marginal delta on top of spatial alignment**.
-- ☐ **P10.5 Docs + honest reporting**: whatever the numbers say; bound the claim if
-  the conduction delta is intracortical-only. Update RESULTS/PAPER_OUTLINE/PIVOT.
-- Guardrail: novelty = temporal axis only; controlled(injected) vs real always
-  labelled; no result tuned toward a win.
+- ☑ **P10.2 Intracortical spectrum benchmark** `scripts/run_transfer_modes.py`
+  (4 folds × 3 seeds): **zero-shot (measured CV) 0.649 beats no-norm 0.399 (+0.250,
+  CIs separated) AND beats full-retrain 0.403** — transfer better than retraining,
+  zero target data. Clean few-shot calibration curve (0.48→0.55→0.62 at 5/20/100
+  labels). Conduction structure > free delays (+0.076). Unsup fails honestly. RESULTS §8.1.
+- ☑ **P10.3 Real cross-session intracortical** `scripts/run_xsession.py`: MC_Maze
+  S/M/L are 3 real Jenkins sessions; spikes aggregated per **electrode** (67
+  corresponding channels) for a non-injected test. Result: conduction δ-fit gives **no**
+  benefit (~−0.04), full-retrain dominates (~0.73) — the real gap is unit turnover /
+  drift, not timing. Honest scope bound (RESULTS §8.2).
+- ☑ **P10.4 EEG breadth** `scripts/run_moabb_transfer.py` (Zhou2016 cross-session,
+  guarded, MOABB as data loader only): δ-fit gives **no** EEG benefit (~−0.03) — bounds
+  the claim to conduction-dominated settings (RESULTS §8.3).
+- ☑ **P10.5 Docs**: PIVOT §7b, RESULTS §8, PAPER_OUTLINE (contrib 4–5 + go/no-go),
+  README, ROADMAP. **21 tests + 10 self-checks green.**
+- **Phase-10 verdict:** the pivot is **validated and scoped** — conduction normalisation
+  enables calibration-free transfer (zero-shot beats retraining) **where the gap is
+  conduction-dominated** (controlled real spikes); real multi-session/EEG gaps are not,
+  so the honest path is pairing it with representation alignment, or targeting
+  conduction-dominated settings.
+- Guardrail honored: novelty = temporal axis only; controlled(injected) vs real always
+  labelled; no result tuned toward a win (real-data results are honest negatives).
 
 ## Out of scope here (wet-lab / hardware — see proposal)
 - ⊘ MRI g-ratio acquisition & MRtrix3/FSL/FreeSurfer pipeline

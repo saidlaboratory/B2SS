@@ -113,6 +113,28 @@ conduction module adds a *significant marginal* delta on top of spatial alignmen
 - If the conduction module doesn't help EEG, that **bounds** the claim
   (intracortical-only), it doesn't sink it. No result will be tuned toward a win.
 
+## 7b. Validation outcome (Phase 10 built + tested)
+
+The pivot is implemented (`b2ss/transfer.py` + four benchmark scripts, 21 tests green)
+and run. Full numbers in [RESULTS.md](RESULTS.md) §8.
+
+- **✅ Works where conduction is the gap (controlled, real spikes).** On the
+  calibration-cost spectrum, **zero-shot measured-CV alignment transfers to a new
+  subject better than retraining from scratch** — 0.649 vs 0.403 R² full-retrain,
+  +0.250 over naive transfer with *zero* target data (CIs separated). Few-shot recovers
+  most of it with a handful of trials; the low-dim conduction structure beats free
+  delays; unsupervised (moment-matching) honestly fails.
+- **⚠️ Bounded on real multi-session data.** On real cross-session intracortical
+  (MC_Maze S/M/L, per-electrode) and EEG (Zhou2016), conduction alignment gives **no**
+  transfer benefit and full-retrain dominates — the real gap is unit turnover / tuning
+  drift / non-conduction factors, not timing.
+
+**Net:** the reframed thesis is *validated and scoped* — conduction normalisation
+enables calibration-free transfer **where the cross-subject gap is conduction-dominated**
+(proven on real spikes), and real multi-session gaps are not. The honest next step is
+combining conduction normalisation with representation alignment, or targeting settings
+where conduction dominates.
+
 ## 7. What we keep vs change
 
 **Keep:** the `ChannelDelay` mechanism, the decoder backbones, the training/eval/stats

@@ -67,10 +67,12 @@ def main():
     par, ds = LeftRightImagery(), Zhou2016()
     subjects = list(range(1, args.subjects + 1))
     try:
+        PATCH = 10
         loaded = {}
         for s in subjects:
             X, y, meta = par.get_data(dataset=ds, subjects=[s])
             X = X[:, :, ::args.decim].astype(np.float32)         # decimate time
+            X = X[:, :, :(X.shape[2] // PATCH) * PATCH]          # crop to a multiple of patch
             yb = (np.asarray(y) == "right_hand").astype(np.int64)
             loaded[s] = (X, yb, np.asarray(meta["session"]))
     except Exception as e:
@@ -84,7 +86,7 @@ def main():
 
     def cfg():
         return DecoderConfig(n_chan=n_chan, win=win, fs=250 // args.decim,
-                             patch=max(1, win // 25), d_model=64, nhead=4, num_layers=2,
+                             patch=PATCH, d_model=64, nhead=4, num_layers=2,
                              dropout=0.3, task="classification", n_classes=2,
                              gate_mode="none", align_mode="none")
 

@@ -36,12 +36,22 @@ supported by the evidence and will (rightly) be rejected.
 3. **Honest real-data status**: within-subject, the gate/alignment gives no benefit
    on either public dataset — reported plainly. Because a data-trained decoder learns
    the (fixed structural) conduction delays, measured CV adds nothing within-subject.
-4. **The positive result — CV as a cross-subject transfer normaliser.** In zero-shot
-   transfer (decoder never sees the target's data, so it *cannot* learn its delays),
-   aligning by the target's measured CV improves transfer on real MC_Maze spikes with
-   an injected conduction difference (GRU +0.13, B2SS +0.19 R²). This reframes CV's
-   value from "within-subject information" to "cross-subject conduction normalisation"
-   — a sharper, evidence-backed claim (proof-of-mechanism; injected difference).
+4. **The positive result — CV as a cross-subject conduction normaliser (Phase 10).**
+   On the controlled calibration-cost spectrum (real MC_Maze spikes, injected
+   conduction, frozen decoder), **zero-shot measured-CV alignment transfers to a new
+   subject BETTER than retraining from scratch** — 0.649 vs 0.403 R² full-retrain,
+   +0.250 over no-norm with *zero* target data (CIs separated); a few labeled trials
+   recover most of it, and the low-dim conduction structure beats free per-channel
+   delays. This reframes CV from "within-subject information" to "cross-subject
+   conduction *normalisation* for calibration-light transfer" — a sharper claim with a
+   strong controlled result.
+5. **The honest bound (Phase 10, real data).** On *real* cross-session intracortical
+   (MC_Maze S/M/L, per-electrode) and EEG (Zhou2016), conduction alignment gives **no**
+   transfer benefit — the real gap is dominated by unit turnover / tuning drift /
+   non-conduction factors, not timing. So the claim is scoped: conduction
+   normalisation helps *where the cross-subject gap is conduction-dominated* (proven in
+   controlled real-spike data), and real multi-session gaps are not — motivating either
+   settings where conduction dominates, or conduction-norm **+** representation alignment.
 
 ## 3. Positioning / novelty (vs prior work — see BACKGROUND.md)
 
@@ -124,9 +134,26 @@ alignment DID help** on real MC_Maze spikes with an injected conduction differen
   differences are conduction-dominated. The paper must state this and call for the
   confirmatory step below.
 
-**Confirmatory next step (for a full claim):** cross-subject transfer where the
-conduction difference is *real and measured*, not injected — i.e. a cohort with both
-neural recordings and a per-subject CV/g-ratio. BACKGROUND §9 shows no such public
-dataset exists, so this is the justified wet-lab/acquisition ask. Until then, publish
-the transfer-normalisation mechanism with the injected-CV proof and the explicit
-caveat; do **not** claim CV improves within-subject decoding.
+**Update after Phase 10 (the pivot built + benchmarked).** The transfer framing is now
+implemented (`b2ss/transfer.py`: freeze the decoder, adapt only a low-dim conduction
+delta) and tested across three settings:
+
+- **Controlled real spikes (calibration-cost spectrum):** zero-shot conduction
+  normalisation **beats retraining from scratch** with zero target data (0.649 vs 0.403
+  R²); few-shot recovers most of it; the low-dim conduction structure beats free delays
+  (RESULTS §8.1). Strong.
+- **Real cross-session (MC_Maze S/M/L, per-electrode) and EEG (Zhou2016):** conduction
+  δ-fit gives **no** benefit; full-retrain dominates — the real multi-session gap is
+  unit turnover / drift / non-conduction factors, not timing (RESULTS §8.2–8.3).
+
+**Recommendation:** publish the pivot as a **conduction-normalisation-for-transfer**
+method with BOTH results — the strong controlled positive *and* the honest real-data
+bound. The defensible claim: *conduction normalisation enables calibration-free transfer
+where the cross-subject gap is conduction-dominated; on real multi-session data the gap
+is not, motivating (a) conduction-dominated settings or (b) conduction-norm **combined
+with** representation alignment.* This is a sharper, honest, and testable contribution
+than the original. **Do not** claim it is a drop-in calibration solution for real
+multi-session BCI (it isn't yet), and **do not** claim CV improves within-subject
+decoding (it doesn't). The highest-value next step is **(b): stack conduction-norm with
+a representation/covariance aligner** and re-test on the real cross-session data — the
+one experiment that could turn the real-data bound into a real-data win.

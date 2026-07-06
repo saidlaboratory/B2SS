@@ -97,6 +97,11 @@ python scripts/run_sensitivity.py
 # real MC_Maze spikes; does measured-delay alignment recover decoding? (data-efficiency)
 python scripts/run_latency_bridge.py
 
+# Phase 10 (THE PIVOT): conduction normalization for calibration-light transfer.
+python scripts/run_transfer_modes.py    # calibration-cost spectrum (zero/few/unsup vs retrain)
+python scripts/run_xsession.py          # REAL cross-session transfer (MC_Maze S/M/L, per-electrode)
+python scripts/run_moabb_transfer.py    # EEG breadth (Zhou2016 cross-session; needs moabb)
+
 # Real-time inference latency vs the proposal's <50 ms budget.
 python scripts/bench_latency.py --proposal-size
 
