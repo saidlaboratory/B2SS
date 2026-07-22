@@ -78,6 +78,35 @@ BN-free GRU regressor), **MPA** (nearest neighbour / scoop risk), **NoMAD** (str
 stabiliser), free-LoRA(matched), full-retrain (cost ceiling). EEG secondary: Euclidean/
 Riemannian Alignment + **T-TIME** on a frozen EEGNet (MOABB Zhou2016).
 
+### Build status (first full run)
+
+Built + tested (**27 self-checks green**), on **real** data (11 monkey-Indy sessions,
+Zenodo 583331, downloaded + loaded): `continual.py`, `stream.py`, `indy.py`
+(real-session validated: 96 electrodes, within-session Ridge R² 0.499), `cadence.py`,
+`tta_baselines.py` (No-Adapt/Tent/CoTTA/RDumb/free-LoRA), `ibci_baselines.py`
+(MPA/NoMAD-style), `run_indy_stream.py`, `run_decomposition_figure.py`.
+
+**Go/no-go outcome — the accuracy headline changed shape (honest).** Cross-session R² is
+*positive but modest* for a frozen decoder (no-adapt ~0.51), not the catastrophe an early
+under-adapted run suggested. The clean, real result is **collapse-resistance**: matched-
+parameter *unstructured* adaptation (free-LoRA dense rank-1; NoMAD full-rank readin)
+**catastrophically collapses** on the stream (cumulative R² < 0, collapse-rate 1.00),
+while *structured* low-DOF adaptation (CADENCE / MPA per-channel; No-Adapt) stays stable
+and positive. CADENCE has the best cumulative **and** worst-session **and** collapse-rate.
+The pre-registered matched-param ablation fires: **structure, not param count, prevents the
+collapse.** Multi-seed CIs in [RESULTS.md](RESULTS.md) §9.
+
+**Honest scoping (stated, not hidden):** on Indy (no measured CV) CADENCE's conduction
+anchor is dormant, so CADENCE ≈ a structured affine adapter (Tent-family); its edge over
+carried-forward Tent is the per-session refresh + anchor reference (no error accumulation).
+The contribution is collapse-resistance + the continual-stream protocol + the matched-param
+structure ablation + the conduction decomposition — **not** a large accuracy gain over
+No-Adapt, and the conduction term's null on real gaps is conceded up front.
+
+**Descoped (not essential to the claim):** EATA/SAR/RoTTA free-TTA variants (Tent/CoTTA/
+RDumb cover the family); the cross-covariance objective upgrade (moment-match sufficed);
+a FALCON leaderboard entry (Indy is the computable-metric arena).
+
 ### Week-by-week
 
 **W1–2 — Tap-root: Indy port + frozen backbone + metric harness** _(everything downstream gates on this)_
