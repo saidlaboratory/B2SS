@@ -18,6 +18,8 @@ from b2ss import transfer as transfer_mod
 from b2ss import continual as continual_mod
 from b2ss import stream as stream_mod
 from b2ss import indy as indy_mod
+from b2ss import cadence as cadence_mod
+from b2ss import tta_baselines as tta_mod
 
 
 def test_cv_selfcheck():
@@ -66,6 +68,14 @@ def test_stream_selfcheck():
 
 def test_indy_selfcheck():
     indy_mod._selfcheck()
+
+
+def test_cadence_selfcheck():
+    cadence_mod._selfcheck()
+
+
+def test_tta_baselines_selfcheck():
+    tta_mod._selfcheck()
 
 
 def test_transfer_wraps_and_freezes_real_decoder():
