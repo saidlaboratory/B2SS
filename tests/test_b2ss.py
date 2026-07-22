@@ -15,6 +15,9 @@ from b2ss import proxies as proxies_mod
 from b2ss import stats as stats_mod
 from b2ss import baselines as baselines_mod
 from b2ss import transfer as transfer_mod
+from b2ss import continual as continual_mod
+from b2ss import stream as stream_mod
+from b2ss import indy as indy_mod
 
 
 def test_cv_selfcheck():
@@ -51,6 +54,18 @@ def test_baselines_selfcheck():
 
 def test_transfer_selfcheck():
     transfer_mod._selfcheck()
+
+
+def test_continual_selfcheck():
+    continual_mod._selfcheck()
+
+
+def test_stream_selfcheck():
+    stream_mod._selfcheck()
+
+
+def test_indy_selfcheck():
+    indy_mod._selfcheck()
 
 
 def test_transfer_wraps_and_freezes_real_decoder():
