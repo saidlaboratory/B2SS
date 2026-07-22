@@ -53,6 +53,17 @@ def main():
         if (ROOT / "scripts" / "run_intracortical_benchmark.py").exists():
             steps.append(("Intracortical benchmark (DANDI MC_Maze; downloads)",
                           [py, "scripts/run_intracortical_benchmark.py"]))
+        # Phase 11 (CADENCE): transfer brackets, the Indy continual stream, and the
+        # decomposition figure (which consumes the two brackets' JSON — run it last).
+        for desc, script, extra in [
+            ("Phase 11: calibration spectrum (injected MC_Maze)", "run_transfer_modes.py", []),
+            ("Phase 11: real cross-session transfer (MC_Maze S/M/L)", "run_xsession.py", []),
+            ("Phase 11: Indy continual stream (downloads Indy on first run)",
+             "run_indy_stream.py", ["--seeds", "3"]),
+            ("Phase 11: drift-decomposition figure", "run_decomposition_figure.py", []),
+        ]:
+            if (ROOT / "scripts" / script).exists():
+                steps.append((desc, [py, f"scripts/{script}", *extra]))
 
     results = [(d, run(d, c)) for d, c in steps]
     print(f"\n{'='*70}\nREPRODUCE SUMMARY\n{'='*70}")
