@@ -77,17 +77,19 @@ def load_windows(win: int):
     return out, n_chan
 
 
-def build_sessions(data, idxs, xmu, xsd, ymu, ysd, adapt_cap, rng):
+def build_sessions(data, idxs, xmu, xsd, ymu, ysd, adapt_cap, rng, retrain_cap=8000):
     sessions = []
     for i in idxs:
         name, X, Y, split = data[i]
         Xtr, Ytr = X[split == 0], Y[split == 0]
-        if len(Xtr) > adapt_cap:
-            keep = rng.choice(len(Xtr), adapt_cap, replace=False)
-            Xtr, Ytr = Xtr[keep], Ytr[keep]
+        # adaptation set (small, capped) vs full-recalibration set (large — the honest
+        # ceiling; a per-session decoder must see the whole session's training data).
+        cap = rng.choice(len(Xtr), min(adapt_cap, len(Xtr)), replace=False)
+        rcap = rng.choice(len(Xtr), min(retrain_cap, len(Xtr)), replace=False)
         sessions.append({
             "name": name,
-            "Xtr": zc(Xtr, xmu, xsd), "Ytr": zc(Ytr, ymu, ysd),
+            "Xtr": zc(Xtr[cap], xmu, xsd), "Ytr": zc(Ytr[cap], ymu, ysd),
+            "Xtr_full": zc(Xtr[rcap], xmu, xsd), "Ytr_full": zc(Ytr[rcap], ymu, ysd),
             "Xte": zc(X[split == 1], xmu, xsd), "Yte": zc(Y[split == 1], ymu, ysd),
         })
     return sessions
@@ -184,8 +186,8 @@ def main():
         if not args.no_retrain:
             traj = []
             for s in sessions:
-                rt = GRUDecoder(n_chan)
-                fit(rt, s["Xtr"], s["Ytr"], epochs=args.epochs, lr=1e-3, batch_size=256, seed=seed)
+                rt = GRUDecoder(n_chan)                       # per-session full recalibration (ceiling)
+                fit(rt, s["Xtr_full"], s["Ytr_full"], epochs=args.epochs, lr=1e-3, batch_size=256, seed=seed)
                 traj.append(vel_r2(s["Yte"], predict(rt, s["Xte"])))
             fv = {sessions[i]["name"]: traj[i] for i in range(len(sessions))}
             mm = metrics_of(traj, fv, fv, args.collapse_floor)
