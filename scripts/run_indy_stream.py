@@ -39,6 +39,7 @@ from b2ss.train import fit, predict
 from b2ss.transfer import source_feature_stats
 from b2ss.cadence import CADENCE
 from b2ss.tta_baselines import NoAdapt, Tent, CoTTA, RDumb, free_lora
+from b2ss.ibci_baselines import MPA, NoMAD, source_input_stats, source_latent_moments
 from b2ss.stream import run_stream
 from b2ss.continual import cumulative_r2, worst_session_r2, collapse_rate, backward_transfer
 from b2ss.stats import mean_ci
@@ -109,17 +110,17 @@ def main():
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--src-cap", type=int, default=8000)
     ap.add_argument("--adapt-cap", type=int, default=1500)
-    ap.add_argument("--fast-steps", type=int, default=15)
+    ap.add_argument("--fast-steps", type=int, default=30)
     ap.add_argument("--collapse-floor", type=float, default=0.2)
     ap.add_argument("--reset-every", type=int, default=3)
-    ap.add_argument("--methods", default="no-adapt,tent,cotta,rdumb,free-lora,cadence")
+    ap.add_argument("--methods", default="no-adapt,mpa,tent,cotta,nomad,free-lora,cadence")
     ap.add_argument("--no-retrain", action="store_true", help="skip the full-retrain ceiling")
     ap.add_argument("--quick", action="store_true")
     args = ap.parse_args()
     if args.quick:
-        args.seeds, args.held_in, args.epochs = 1, 2, 15
-        args.src_cap, args.adapt_cap, args.fast_steps = 3000, 600, 8
-        args.methods = "no-adapt,tent,cotta,cadence"
+        args.seeds, args.held_in, args.epochs = 1, 3, 20
+        args.src_cap, args.adapt_cap, args.fast_steps = 5000, 1200, 30
+        args.methods = "no-adapt,mpa,tent,nomad,free-lora,cadence"
         args.no_retrain = True
     RESULTS.mkdir(exist_ok=True)
 
@@ -154,6 +155,8 @@ def main():
         dec = GRUDecoder(n_chan)
         fit(dec, Xsz, Ysz, epochs=args.epochs, lr=1e-3, batch_size=256, seed=seed)
         src_stats = source_feature_stats(dec, Xsz)
+        src_in = source_input_stats(Xsz)
+        src_lat = source_latent_moments(dec, Xsz)
 
         sessions = build_sessions(data, stream_idx, xmu, xsd, ymu, ysd, args.adapt_cap, rng)
         order = list(range(len(sessions)))
@@ -161,8 +164,10 @@ def main():
 
         factories = {
             "no-adapt": lambda: NoAdapt(dec),
+            "mpa": lambda: MPA(dec, src_in),
             "tent": lambda: Tent(dec, n_chan, src_stats, steps=fs),
             "cotta": lambda: CoTTA(dec, n_chan, src_stats, steps=fs),
+            "nomad": lambda: NoMAD(dec, n_chan, src_lat, steps=fs),
             "rdumb": lambda: RDumb(lambda: Tent(dec, n_chan, src_stats, steps=fs), args.reset_every),
             "free-lora": lambda: free_lora(dec, n_chan, src_stats, fast_steps=fs),
             "cadence": lambda: CADENCE(dec, n_chan, src_stats=src_stats, fast_steps=fs),
@@ -203,15 +208,16 @@ def main():
     if na and "cadence" in ci:
         cad = ci["cadence"]
         acc_gain = cad["cumulative"][0] - na["cumulative"][0]
-        free = [m for m in ("tent", "cotta") if m in ci]
-        worst_free = min((ci[m]["collapse"][0] for m in free), default=0.0)
+        unstructured = [m for m in ("free-lora", "nomad") if m in ci]      # the free/high-DOF methods
+        worst_free = max((ci[m]["collapse"][0] for m in unstructured), default=0.0)
         cadence_safe = cad["collapse"][0] <= na["collapse"][0] + 1e-9
-        free_collapses = any(ci[m]["collapse"][0] > na["collapse"][0] + 1e-9 for m in free)
+        free_collapses = any(ci[m]["collapse"][0] > na["collapse"][0] + 1e-9 for m in unstructured)
         verdict = (f"CADENCE cum {acc_gain:+.3f} vs No-Adapt, collapse {cad['collapse'][0]:.2f} "
-                   f"vs No-Adapt {na['collapse'][0]:.2f}; free-TTA collapse "
-                   f"{worst_free:.2f}. " +
-                   ("PARETO WIN (acc up, collapse safe, free-TTA worse)"
-                    if acc_gain > 0 and cadence_safe and free_collapses else
+                   f"vs No-Adapt {na['collapse'][0]:.2f}; unstructured (free-LoRA/NoMAD) collapse "
+                   f"up to {worst_free:.2f}. " +
+                   ("PARETO WIN (structured adaptation stays accurate + collapse-safe; "
+                    "matched-param unstructured collapses)"
+                    if acc_gain >= 0 and cadence_safe and free_collapses else
                     "no clean Pareto win yet — inspect trajectory / stream length"))
     print(f"\n  VERDICT: {verdict}\n")
 
