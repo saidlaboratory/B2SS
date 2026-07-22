@@ -86,19 +86,25 @@ def load_indy_session(path, bin_s: float = BIN_S, val_frac: float = 0.2) -> Maze
 
 
 def _read_indy_mat(path: Path):
-    """Read spike-time cells + cursor position/time from an Indy .mat (HDF5 v7.3).
-    Returns (spike_times: list[np.ndarray], cursor_pos: (T,2), cursor_t: (T,))."""
+    """Read spikes + cursor position/time from an Indy .mat (HDF5 v7.3).
+
+    `spikes` is a (n_units, n_chan) cell of spike-time vectors. We return ONE
+    multiunit spike train per CHANNEL (concatenating all units on that electrode) —
+    the fixed Utah-array electrode is the identity that corresponds across days,
+    whereas unit sorting drifts. Placeholder/empty cells fall outside the cursor time
+    window and are dropped by the windowed binning, so no special-casing is needed.
+    Returns (spike_times: list[np.ndarray] len n_chan, cursor_pos: (T,2), cursor_t: (T,))."""
     import h5py
     with h5py.File(path, "r") as f:
         t = np.asarray(f["t"]).squeeze()
-        pos_key = "finger_pos" if "finger_pos" in f else "cursor_pos"
-        pos = np.asarray(f[pos_key]).T[:, :2].astype(float)
-        refs = f["spikes"]                               # (n_unit, n_chan) cell of refs
+        pos = np.asarray(f["cursor_pos"]).T[:, :2].astype(float)   # 2-D screen cursor
+        refs = f["spikes"]                               # (n_units, n_chan)
+        n_units, n_chan = refs.shape
         spike_times = []
-        for col in range(refs.shape[1]):
-            for row in range(refs.shape[0]):
-                st = np.asarray(f[refs[row, col]]).squeeze()
-                spike_times.append(np.atleast_1d(st).astype(float))
+        for ch in range(n_chan):
+            per_unit = [np.atleast_1d(np.asarray(f[refs[u, ch]]).squeeze()).astype(float)
+                        for u in range(n_units)]
+            spike_times.append(np.concatenate(per_unit) if per_unit else np.empty(0))
     return spike_times, pos, t
 
 
