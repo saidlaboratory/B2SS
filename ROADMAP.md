@@ -92,9 +92,11 @@ under-adapted run suggested. The clean, real result is **collapse-resistance**: 
 parameter *unstructured* adaptation (free-LoRA dense rank-1; NoMAD full-rank readin)
 **catastrophically collapses** on the stream (cumulative R² < 0, collapse-rate 1.00),
 while *structured* low-DOF adaptation (CADENCE / MPA per-channel; No-Adapt) stays stable
-and positive. CADENCE has the best cumulative **and** worst-session **and** collapse-rate.
-The pre-registered matched-param ablation fires: **structure, not param count, prevents the
-collapse.** Multi-seed CIs in [RESULTS.md](RESULTS.md) §9.
+and positive (3 seeds: CADENCE 0.503, best collapse-rate + worst-session + no error
+accumulation; a simple closed-form standardiser (MPA) edges it on *mean* R² 0.563 — conceded).
+Frozen+adapt (0.503) **beats per-session full retrain** (0.124, limited by within-session
+non-stationarity). The pre-registered matched-param ablation fires: **structure, not param
+count, prevents the collapse.** Multi-seed CIs in [RESULTS.md](RESULTS.md) §9.
 
 **Honest scoping (stated, not hidden):** on Indy (no measured CV) CADENCE's conduction
 anchor is dormant, so CADENCE ≈ a structured affine adapter (Tent-family); its edge over
