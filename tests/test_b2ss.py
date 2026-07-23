@@ -211,3 +211,101 @@ def test_heterogeneous_cv_is_information():
         data_mod._mse(data_mod.oracle_predict(het.X_test, het.A, het.B, w), het.Y_test)
         for w in range(data_mod.W_MIN, data_mod.W_MAX + 1))
     assert per_trial < best_const
+
+
+def test_structure_ablation_is_not_confounded_by_the_optimiser():
+    """The matched-parameter structure ablation must compare Tent (gradient, diagonal)
+    with free-LoRA (gradient, dense) — not CADENCE with free-LoRA. CADENCE's affine is
+    fit in CLOSED FORM, so pairing it against a gradient-fit head confounds structure
+    with optimiser. Pin the property that makes that true: unlabeled CADENCE-affine is
+    invariant to the optimiser settings; free-LoRA is not."""
+    from b2ss.baselines import GRUDecoder
+    from b2ss.cadence import CADENCE
+    from b2ss.tta_baselines import Tent, free_lora
+    from b2ss.transfer import source_feature_stats
+
+    torch.manual_seed(0)
+    rng = np.random.default_rng(0)
+    C = 12
+    Xs = rng.standard_normal((200, C, 20)).astype("float32")
+    Xt = (Xs * (1 + 0.5 * rng.standard_normal(C)).astype("float32")[None, :, None])
+    dec = GRUDecoder(C, n_out=2, hidden=16, layers=1)
+    src = source_feature_stats(dec, Xs)
+
+    def fitted(mk):
+        m = mk(); m.adapt(Xt); return m.predict(Xt)
+
+    slow = fitted(lambda: CADENCE(dec, C, src_stats=src, fast_lr=0.001, fast_steps=1))
+    fast = fitted(lambda: CADENCE(dec, C, src_stats=src, fast_lr=0.5, fast_steps=200))
+    assert np.allclose(slow, fast)                      # closed form: lr/steps irrelevant
+
+    lo = fitted(lambda: free_lora(dec, C, src, fast_lr=0.001, fast_steps=1))
+    hi = fitted(lambda: free_lora(dec, C, src, fast_lr=0.5, fast_steps=200))
+    assert not np.allclose(lo, hi)                      # gradient: lr/steps matter
+
+    # Tent is the like-for-like comparator: gradient-fit, same parameter count as free-LoRA
+    t = Tent(dec, C, src, steps=5)
+    fl = free_lora(dec, C, src)
+    assert t.gain.numel() + t.bias.numel() == fl.U.numel() + fl.V.numel()
+
+
+def test_mpa_std_floor_is_load_bearing():
+    """Calibrating on a slice where a channel is quiet must not blow up decoding of the
+    rest of the session. The floor is what prevents it — this is the fix that made the
+    §9.1 baseline fair."""
+    from b2ss.baselines import GRUDecoder
+    from b2ss.ibci_baselines import MPA, source_input_stats
+
+    rng = np.random.default_rng(0)
+    C = 10
+    Xs = rng.standard_normal((300, C, 20)).astype("float32")
+    dec = GRUDecoder(C, n_out=2, hidden=16, layers=1)
+    quiet = Xs[:25].copy()
+    quiet[:, 0, :] = 1e-3 * rng.standard_normal(quiet[:, 0, :].shape)
+
+    hot = MPA(dec, source_input_stats(Xs), std_floor=0.0)
+    cold = MPA(dec, source_input_stats(Xs))
+    hot.adapt(quiet); cold.adapt(quiet)
+    assert np.abs(hot._align(Xs)).max() > 100 * np.abs(cold._align(Xs)).max()
+
+
+def test_cadence_has_no_inert_conduction_anchor():
+    """The anchor was an exact identity op on every stream we ran (no measured CV), so it
+    was removed from the method. Guard against it drifting back in as dead architecture."""
+    from b2ss.baselines import GRUDecoder
+    from b2ss.cadence import CADENCE
+    cad = CADENCE(GRUDecoder(8, n_out=2, hidden=16, layers=1), 8)
+    assert not hasattr(cad, "aligner")
+    assert {n for n, p in cad.named_parameters() if p.requires_grad} == {"gain", "bias"}
+
+
+def test_recalibration_ceiling_does_not_mutate_the_frozen_source():
+    """The stream scores every adapter against ONE frozen decoder. If the per-session
+    recalibration ceiling fine-tuned that decoder in place instead of a copy, every method
+    run after it would be scored on a mutated backbone and the whole table would be quietly
+    wrong. Pin the copy."""
+    import importlib.util
+    from b2ss.baselines import GRUDecoder
+    from b2ss.train import fit
+
+    spec = importlib.util.spec_from_file_location(
+        "rs", str(__import__("pathlib").Path(__file__).resolve().parent.parent
+                 / "scripts" / "run_indy_stream.py"))
+    rs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rs)
+
+    rng = np.random.default_rng(0)
+    C = 8
+    X = rng.standard_normal((400, C, 20)).astype("float32")
+    Y = (X.mean(2) @ rng.standard_normal((C, 2))).astype("float32")
+    dec = GRUDecoder(C, hidden=16, layers=1)
+    fit(dec, X, Y, epochs=2, lr=1e-3, batch_size=256, seed=0)
+    for p in dec.parameters():
+        p.requires_grad_(False)
+    before = dec.head.weight.detach().clone()
+
+    s = {"Xtr_full": X[:300], "Ytr_full": Y[:300], "Xte": X[300:], "Yte": Y[300:]}
+    for scratch in (False, True):
+        assert np.isfinite(rs.recalibrate(dec, s, epochs=2, seed=0, scratch=scratch))
+        assert torch.equal(dec.head.weight, before)
+        assert all(not p.requires_grad for p in dec.parameters())

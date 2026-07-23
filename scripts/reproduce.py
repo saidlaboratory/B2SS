@@ -58,10 +58,12 @@ def main():
         for desc, script, extra in [
             ("Phase 11: calibration spectrum (injected MC_Maze)", "run_transfer_modes.py", []),
             ("Phase 11: real cross-session transfer (MC_Maze S/M/L)", "run_xsession.py", []),
-            ("Phase 11: Indy continual stream (downloads Indy on first run)",
-             "run_indy_stream.py", ["--seeds", "3"]),
-            ("Phase 11: Indy calibration-cost spectrum (beats-all-competitors)",
+            ("Phase 11: Indy online data-efficiency curve (downloads Indy on first run)",
              "run_indy_calibration.py", ["--seeds", "3"]),
+            ("Phase 11: CADENCE hyperparameter sweep + LOSO selection",
+             "run_tau_sweep.py", ["--seeds", "3"]),
+            ("Phase 11: Indy continual stream (regret + recalibration ceilings)",
+             "run_indy_stream.py", ["--seeds", "3"]),
             ("Phase 11: drift-decomposition figure", "run_decomposition_figure.py", []),
         ]:
             if (ROOT / "scripts" / script).exists():

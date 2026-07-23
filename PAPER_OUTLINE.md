@@ -1,159 +1,127 @@
-# B2SS — Paper Scoping (P6/P7)
+# Paper scoping — the decomposition paper
 
-The honest framing to decide *before* writing, and the outline if we proceed.
-Numbers are filled from [RESULTS.md](RESULTS.md) once the full multi-seed runs land.
+The framing to commit to before writing, and the outline if we proceed. Numbers live in
+[RESULTS.md](RESULTS.md) and are not duplicated here; this document is the argument.
 
-> **Post-pivot ([PIVOT.md](PIVOT.md)):** the paper's spine is no longer "CV improves
-> decoding" but **"conduction normalisation for cross-subject/session transfer"** —
-> the one evidence-backed claim. The within-subject negatives (§1–§6 below) become the
-> *motivation*; the transfer result + the Phase-10 spectrum/MOABB benchmarks become
-> the contribution. Re-scope the sections accordingly once Phase 10 lands.
+> **Rebuilt against [BETTER.md](BETTER.md)** — an adversarial review that found the previous
+> framing ("CADENCE beats every competitor in the data-scarce regime") contradicted by our
+> own `results/indy_stream.json`, and its headline margin inflated by a missing scale floor
+> in the baseline. Every claim below is one that survived that review.
 
-## 1. What this paper is — and is not
+---
 
-**Is:** a *methods / mechanism* paper. "A conduction-velocity-modulated decoder
-architecture (Transformer + CV-gated integration window + Neural-ODE readout), and
-a rigorous, adversarial test of *when* a measured-CV prior helps decoding."
+## 1. The question, and why it is the right one
 
-**Is not:** a clinical or neuroscience result. We make **no** claim that B2SS
-improves prosthetic control in humans, that CV is decodable from a person's brain
-in real time, or that any hypothesis H1–H6 is confirmed. Those need the wet-lab
-study (MRI g-ratio, TMS-EEG, sEEG, closed-loop) that this software does not touch.
+**"How much of the cross-session drift in an intracortical BCI is conduction timing — and
+what do you do about the rest?"**
 
-Framing it any stronger than "methods + mechanism + honest real-data status" is not
-supported by the evidence and will (rightly) be rejected.
+This is a measurement paper with a practical consequence. It is not a SOTA paper and must
+not be written as one: on the continual stream a plain per-session standardiser gets higher
+cumulative R² than our adapter, and full per-session recalibration beats both by a wide
+margin. We say both in the results section rather than letting a reviewer find them in the
+JSON.
 
-## 2. Contributions (what is genuinely new)
+The question is worth asking because the field has two incompatible habits. Conduction
+delay is treated as a real, measurable, biophysically-grounded quantity (g-ratio → velocity
+→ latency) in the neuroscience literature; and cross-session BCI drift is treated as an
+undifferentiated blob to be absorbed by whatever adapter is fashionable. Nobody has put a
+number on how much of the second is the first. We have, with a positive control.
 
-1. **The CV-gate mechanism**, formalized: an integration window τ set from a
-   structural CV prior, gating attention span + ODE integration time, with an
-   uncertainty-aware fallback to the population window.
-2. **A clean separation of "prior" vs "information"** (the central methodological
-   result): on homogeneous-CV data the gate is a *data-efficiency prior* whose
-   advantage shrinks with data; on heterogeneous-CV data (CV varies per context) it
-   is *genuine information* a learned constant cannot capture, and the gap persists.
-   Backed by a sensitivity sweep showing robustness across hyperparameters.
-3. **Honest real-data status**: within-subject, the gate/alignment gives no benefit
-   on either public dataset — reported plainly. Because a data-trained decoder learns
-   the (fixed structural) conduction delays, measured CV adds nothing within-subject.
-4. **The positive result — CV as a cross-subject conduction normaliser (Phase 10).**
-   On the controlled calibration-cost spectrum (real MC_Maze spikes, injected
-   conduction, frozen decoder), **zero-shot measured-CV alignment transfers to a new
-   subject BETTER than retraining from scratch** — 0.649 vs 0.403 R² full-retrain,
-   +0.250 over no-norm with *zero* target data (CIs separated); a few labeled trials
-   recover most of it, and the low-dim conduction structure beats free per-channel
-   delays. This reframes CV from "within-subject information" to "cross-subject
-   conduction *normalisation* for calibration-light transfer" — a sharper claim with a
-   strong controlled result.
-5. **The honest bound (Phase 10, real data).** On *real* cross-session intracortical
-   (MC_Maze S/M/L, per-electrode) and EEG (Zhou2016), conduction alignment gives **no**
-   transfer benefit — the real gap is dominated by unit turnover / tuning drift /
-   non-conduction factors, not timing. So the claim is scoped: conduction
-   normalisation helps *where the cross-subject gap is conduction-dominated* (proven in
-   controlled real-spike data), and real multi-session gaps are not — motivating either
-   settings where conduction dominates, or conduction-norm **+** representation alignment.
+## 2. Contributions
 
-## 3. Positioning / novelty (vs prior work — see BACKGROUND.md)
+1. **A calibrated decomposition of the cross-session gap.** A conduction/timing marginal
+   measured in velocity-R² units, with (a) a positive control on real spikes where timing
+   dominates by construction and the marginal separates from zero, and (b) two independent
+   real-data nulls — intracortical multi-session and EEG cross-session. The control is what
+   licenses the nulls: an instrument that reads zero everywhere measures nothing.
+2. **A failure mode of the standard per-session standardiser.** On a sparse 96-electrode
+   array, ~15% of channels are near-silent over a 25-window calibration slice. Estimating
+   per-channel scale from that slice and dividing by it does not degrade gracefully — it
+   **diverges to negative R²**. The fix is a scale floor plus evidence-weighted shrinkage
+   (`w = n/(n+τ)`), and we report the failure, the floor-only fix, and the shrinkage fix as
+   three separate rows so the contribution of each is visible.
+3. **A continual-stream iBCI protocol with a stability metric that discriminates.** Streaming
+   sessions in temporal order with revisits, scored on cumulative/worst-session R², backward
+   transfer, and **regret vs No-Adapt** (how often, and how badly, adapting loses). We adopted
+   regret after finding that a fixed R²-floor collapse-rate assigns the identical value to our
+   method and to doing nothing — a metric that cannot lose is not evidence.
+4. **A negative result chain worth citing.** Four falsified hypotheses with mechanisms, not
+   just outcomes: within-subject CV gating (a decoder learns fixed structural delays from
+   data), delay alignment (same reason), real cross-session conduction normalisation (the gap
+   is not timing), EEG conduction alignment (ditto). §7.
 
-- **vs LFADS / DFINE / POSSM** (neural decoders): those learn latent dynamics with
-  no structural prior; B2SS injects a *measured biophysical* prior (CV) into the
-  temporal scale. We benchmark against the decoder family (GRU/Ridge here; the
-  LFADS/POSSM numbers are context).
-- **vs learnable-delay SNNs (DCLS, Sun 2023)**: they *learn* per-connection delays
-  from data; B2SS *measures* the delay-setting variable (CV) and uses it as a prior
-  — complementary, and testable head-to-head as future work.
-- **vs structure→delay brain models (HBM 2025) & CV-from-MRI (Drakesmith 2019,
-  Asadi 2025)**: those map structure→conduction delay or fit delays to neural data;
-  none is a *decoder* that consumes CV to set its temporal window. That is the gap.
+## 3. Positioning — what is ours and what is borrowed
+
+State this in the paper, in these words, before a reviewer does. See
+[BACKGROUND.md §10](BACKGROUND.md) for the citations.
+
+- **The estimator is not new.** `w = n/(n+τ)` shrinkage toward a prior is textbook empirical
+  Bayes / James–Stein. Interpolating normalization statistics between source and target is
+  established in TTA (AdaBN/PTBN family; the α-blend of Schneider et al. 2020). Per-session
+  input re-centering is standard BCI transfer (Euclidean/Riemannian alignment). We use all
+  three off the shelf.
+- **The measurement is ours**, and so is the observation that the standard estimator
+  *diverges* rather than degrades in this regime, and the protocol that makes it visible.
+- **vs learnable-delay models (DCLS/SNN)**: they learn per-connection delays from data; we
+  measure whether delay is where the cross-session gap lives at all, and answer no.
+- **vs LFADS / NoMAD / MPA**: decoder-side stabilisers. NoMAD and MPA are our baselines, not
+  our contrast class — MPA wins the stream and that is reported.
 
 ## 4. Outline & experiment mapping
 
 | Section | Content | Evidence |
 | --- | --- | --- |
-| Intro | spatial-only bottleneck; CV as a structural prior | BACKGROUND §1–2 |
-| Architecture | conv patch-embed → CV gate → Neural-ODE; uncertainty gate | `b2ss/model.py`; F1–F3 fixed |
-| Mechanism (synthetic) | Study A (prior) vs Study B (information); ablation | `run_ablation.py` |
-| Robustness | sensitivity to γ, span-fraction, ODE steps, patch | `run_sensitivity.py` |
-| Real data I (EEG) | competitive-ness vs EEGNet/CSP; gate w/ mu proxy | `run_real_benchmark.py` |
-| Real data II (intracortical) | velocity R² vs GRU/Ridge; gate w/ context | `run_intracortical_benchmark.py` |
-| Stats/power | corrected effect sizes; §6 harness | `b2ss/stats.py` |
-| Limitations | see §5 | — |
+| Intro | cross-session drift as an undifferentiated blob; the two habits | BACKGROUND §1–2, §5 |
+| The instrument | conduction alignment as a measurement, not an adapter; grouping + delay model | `b2ss/transfer.py` |
+| Positive control | injected per-group latency on real MC_Maze spikes; marginal separates | `run_transfer_modes.py` |
+| Null I | real multi-session intracortical (MC_Maze S/M/L, per-electrode) | `run_xsession.py` |
+| Null II | EEG cross-session (Zhou2016) | `run_moabb_transfer.py` |
+| **The decomposition figure** | all three in the same units — the paper's centre | `run_decomposition_figure.py` |
+| Consequence | per-channel gain/offset drift; the standardiser's divergence; shrinkage | `run_indy_calibration.py` |
+| Hyperparameters | τ sweep + leave-one-session-out selection (not tuned on eval) | `run_tau_sweep.py` |
+| Continual stream | protocol, regret metric, recalibration ceilings, structure ablation | `run_indy_stream.py` |
+| What we ruled out | the four falsified hypotheses and why each failed | RESULTS §1–8 |
+| Limitations | §5 | — |
 
-## 5. Limitations (must be stated plainly)
+## 5. Limitations — stated in the paper, not the rebuttal
 
-- The CV mechanism is **demonstrated only in synthetic data** where the CV→window
-  law is planted; that is a proof of mechanism, not of its existence in brains.
-- On **real EEG** the CV proxy (mu peak frequency) is weak/indirect and the gate
-  gives no benefit; the architecture is not competitive with EEGNet/CSP on
-  small-trial classification (wrong regime).
-- On **real intracortical** continuous decoding, the gate does **not** help (the
-  recency window discards useful history; a plain GRU is stronger), and the
-  reaction-time context is not a conduction-velocity signal.
-- No **measured** CV exists in any real dataset used here; the decisive test
-  (measured CV → decoding benefit) requires the wet-lab pilot. A verified public-data
-  scan (BACKGROUND §9) found **no dataset pairing a decode task with a measured CV on
-  the same subjects** — this gap is real and justifies a dedicated acquisition.
-- **Phase 8 (redesign):** we reframed CV from window-*shrinking* (which removes
-  history and hurt continuous decoding) to delay-*alignment* (which adds it), and
-  tested it on real spikes with an *injected, known* latency (`run_latency_bridge.py`).
-  Finding: a **fixed structural** per-channel delay is *learnable from data*, so
-  measured-delay alignment gives at most a marginal low-data prior benefit and none
-  for a well-trained decoder. This sharpens the core negative: because CV is (by the
-  proposal's own framing) a fixed structural parameter, a within-subject decoder
-  simply learns the delays, and being told them adds little. CV's plausible value is
-  therefore **cross-subject/zero-shot transfer or low-data**, not within-subject info.
-- Small N (EEG 8 subjects; one intracortical session).
+- **Per-session recalibration beats every label-free adapter here, and it is not close.**
+  Given the session's own input normalisation, a recalibrated decoder reaches ~0.75 velocity
+  R² against the best adapter's 0.575. What label-free adaptation buys is **cheapness** —
+  2·n_chan parameters, no labels, no training — at a real accuracy cost. Any framing that
+  implies otherwise is wrong; an earlier version of our own harness implied otherwise because
+  it fed the ceiling source-normalised inputs, and that error is documented rather than
+  quietly fixed.
+- **One subject.** Every stream result is monkey Indy, one 96-electrode array, 11 sessions
+  over ~1 month. The same Zenodo record carries a second monkey (`loco`) on the same rig, and
+  the code takes `--subject loco`, but we did not run it (~12 GB). A single-subject result is
+  a single-subject result.
+- **Our adapter does not win the stream.** With ample calibration data a plain floored
+  standardiser gets higher cumulative R². The shrinkage helps in the data-scarce regime and
+  costs accuracy outside it. Both ends of the curve are reported.
+- **The positive control is an oracle in two ways**, not one. The conduction difference is
+  injected and known, *and* the aligner is given the same channel→group map used to generate
+  it. It is an upper bound on what perfect conduction knowledge could buy — which is the
+  right thing for a control and the wrong thing to quote as a result.
+- **No measured CV exists in any dataset used here.** The decisive test of the original
+  hypothesis still needs an acquisition pairing a decode task with a per-subject CV;
+  BACKGROUND §9 documents that no public dataset does.
+- **The estimator is standard.** See §3. The novelty claim is narrow and deliberately so.
+- Small N elsewhere: EEG 8 subjects; single MC_Maze sessions in the bracket experiments.
 
-## 6. Go / no-go (P7) — recommendation
+## 6. Venue and go/no-go
 
-Two defensible paths; pick based on appetite:
+**Recommendation: submit, as a measurement paper, to a test-time/continual-adaptation
+workshop.** The decomposition is workshop-native (it tells the room something about their
+problem that they did not know), the negative chain is the kind of content workshops
+reward, and the artifact reproduces end-to-end.
 
-- **Publish now as methods+mechanism (with honest negatives).** Venue: a methods/ML
-  track (e.g. *J. Neural Eng.*, a NeurIPS/ICLR workshop). Claim = the architecture
-  + the prior-vs-information result + transparent real-data negatives. This is
-  honest and citable, but it is a "mechanism works in silico; unproven in vivo"
-  paper — modest impact.
-- **Hold for the measured-CV experiment.** Run the wet-lab pilot (or find a public
-  dataset pairing neural recordings with a structural CV/g-ratio proxy) and only
-  then claim CV helps real decoding. Higher impact, much higher cost/time.
+**Do not** submit it as a method paper. The method is one line of empirical Bayes, it loses
+the stream to its nearest baseline, and a reviewer will find both facts in ten minutes.
+Framing it as SOTA is the one thing that turns a defensible workshop paper into a reject.
 
-**Recommendation (updated after Phase 9 — the transfer result changes the picture).**
-Within-subject, CV helps no real decode (EEG proxy, intracortical gate, Phase-8
-bridge), because a decoder learns the delays from data. **But in the cross-subject
-zero-shot regime — where the decoder cannot learn the target's delays — measured-CV
-alignment DID help** on real MC_Maze spikes with an injected conduction difference
-(GRU +0.13, B2SS +0.19 R²; RESULTS §7). So the honest, evidence-backed frame is:
-
-- **The claim to make:** CV is not within-subject decoding information (a data-trained
-  decoder learns the delays); its value is as a **cross-subject conduction
-  normaliser for zero-shot transfer**. That is a sharper, more defensible, and more
-  novel claim than the original "CV improves decoding," and it is *supported* by a
-  proof-of-mechanism on real neural data.
-- **The honest caveat:** the transfer result uses an *injected, known* conduction
-  difference — an upper bound / mechanism proof, not evidence that real inter-subject
-  differences are conduction-dominated. The paper must state this and call for the
-  confirmatory step below.
-
-**Update after Phase 10 (the pivot built + benchmarked).** The transfer framing is now
-implemented (`b2ss/transfer.py`: freeze the decoder, adapt only a low-dim conduction
-delta) and tested across three settings:
-
-- **Controlled real spikes (calibration-cost spectrum):** zero-shot conduction
-  normalisation **beats retraining from scratch** with zero target data (0.649 vs 0.403
-  R²); few-shot recovers most of it; the low-dim conduction structure beats free delays
-  (RESULTS §8.1). Strong.
-- **Real cross-session (MC_Maze S/M/L, per-electrode) and EEG (Zhou2016):** conduction
-  δ-fit gives **no** benefit; full-retrain dominates — the real multi-session gap is
-  unit turnover / drift / non-conduction factors, not timing (RESULTS §8.2–8.3).
-
-**Recommendation:** publish the pivot as a **conduction-normalisation-for-transfer**
-method with BOTH results — the strong controlled positive *and* the honest real-data
-bound. The defensible claim: *conduction normalisation enables calibration-free transfer
-where the cross-subject gap is conduction-dominated; on real multi-session data the gap
-is not, motivating (a) conduction-dominated settings or (b) conduction-norm **combined
-with** representation alignment.* This is a sharper, honest, and testable contribution
-than the original. **Do not** claim it is a drop-in calibration solution for real
-multi-session BCI (it isn't yet), and **do not** claim CV improves within-subject
-decoding (it doesn't). The highest-value next step is **(b): stack conduction-norm with
-a representation/covariance aligner** and re-test on the real cross-session data — the
-one experiment that could turn the real-data bound into a real-data win.
+**The single highest-value follow-up** is the one this repo cannot do: a cohort with both a
+decode task and a measured per-subject conduction velocity. Everything here says the
+cross-session gap is representation drift rather than timing — but "timing does not explain
+the drift between two days of the same monkey" is not the same claim as "conduction velocity
+is useless as a decoder prior," and only measured-CV data separates them.

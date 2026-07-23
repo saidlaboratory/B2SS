@@ -108,6 +108,26 @@ def icc21_point(x: np.ndarray) -> float:
     return (ms_r - ms_e) / (ms_r + (k - 1) * ms_e + (k / n) * (ms_c - ms_e))
 
 
+def paired_by_unit(a, b, n_units: int) -> dict:
+    """Paired comparison of two methods over the EXPERIMENTAL UNIT, averaging seeds away.
+
+    `a`, `b` are flat result lists in (seed-major, unit-minor) order — the layout the
+    Indy scripts accumulate, `n_units` values per seed. Seeds are a nuisance dimension:
+    re-running the same sessions under a different init does not produce new sessions, so
+    pooling seed x unit as if they were independent draws inflates n and shrinks the CI.
+    Average within unit, then test across units.
+
+    Returns mean difference, paired-t p, units won, and the CI of the difference.
+    """
+    a = np.asarray(a, float).reshape(-1, n_units).mean(0)
+    b = np.asarray(b, float).reshape(-1, n_units).mean(0)
+    d = a - b
+    p = float(stats.ttest_rel(a, b).pvalue) if n_units > 1 and d.std() > 0 else 1.0
+    m, lo, hi = mean_ci(d)
+    return {"delta": m, "ci": [lo, hi], "p": p,
+            "won": int((d > 0).sum()), "n": int(n_units)}
+
+
 # --------------------------------------------------------------------------- #
 # Multiple-comparison correction
 # --------------------------------------------------------------------------- #
@@ -170,6 +190,20 @@ def _selfcheck() -> None:
     # BH: with one tiny p and rest large, exactly the tiny one survives
     rej = benjamini_hochberg([0.001, 0.4, 0.6, 0.8], q=0.05)
     assert rej.tolist() == [True, False, False, False]
+
+    # paired_by_unit: a small consistent per-unit gain is significant; seeds must not
+    # inflate n (3 seeds x 4 units is still n=4), and the sign convention is a - b.
+    units = np.array([0.40, 0.55, 0.31, 0.62])
+    gain = np.array([0.01, 0.02, 0.04, 0.05])                   # effect varies BY UNIT
+    A = np.concatenate([units + gain + rng.normal(0, 0.002, 4) for _ in range(3)])
+    B = np.concatenate([units + rng.normal(0, 0.002, 4) for _ in range(3)])
+    pb = paired_by_unit(A, B, 4)
+    assert pb["n"] == 4 and pb["won"] == 4 and pb["p"] < 0.05
+    assert abs(pb["delta"] - gain.mean()) < 0.005, pb
+    assert paired_by_unit(B, A, 4)["delta"] < 0                 # antisymmetric
+    # pooling seed x unit as n=12 triple-counts 4 sessions and shrinks the interval
+    naive = mean_ci(A - B)
+    assert (pb["ci"][1] - pb["ci"][0]) > 2 * (naive[2] - naive[1])
 
     # mixed model: CV that drives tau -> positive delta R^2, significant LRT
     import pandas as pd

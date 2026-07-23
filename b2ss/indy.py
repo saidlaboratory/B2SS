@@ -69,8 +69,17 @@ def _fill_nan_forward(a: np.ndarray) -> np.ndarray:
     return out
 
 
-def list_sessions(indy_dir: Path = INDY_DIR):
-    return sorted(Path(indy_dir).glob("indy_*.mat"))
+def list_sessions(indy_dir: Path = INDY_DIR, subject: str = "indy"):
+    """Sessions for one subject, in date order (the filenames sort chronologically).
+
+    The same Zenodo record carries a second monkey, `loco` (10 sessions), on the same rig
+    and the same 96-electrode Utah array — so replicating any stream result on a second
+    subject is a download plus `--subject loco`, no code. We did not run it here: the loco
+    files are ~1.1-1.6 GB each (vs ~120 MB for indy) because they carry a second array, so
+    the set is ~12 GB. That is a real gap in the evidence, not a solved problem — a
+    single-subject result is a single-subject result.
+    """
+    return sorted(Path(indy_dir).glob(f"{subject}_*.mat"))
 
 
 def load_indy_session(path, bin_s: float = BIN_S, val_frac: float = 0.2) -> MazeData:

@@ -61,15 +61,24 @@ def source_latent_moments(decoder, X, device="cpu"):
 
 class MPA:
     """Closed-form per-channel standardization of each session to the source input
-    distribution (membrane/input moment alignment). Label-free, no gradient."""
-    def __init__(self, decoder, src_stats_x, device="cpu"):
+    distribution (membrane/input moment alignment). Label-free, no gradient.
+
+    `std_floor` matters more than it looks. On a sparse multi-electrode array a sizeable
+    minority of channels are near-silent over a short calibration slice (~15% of the 96
+    Indy electrodes have sd < 0.1 over 25 windows), and dividing by their raw sd sends the
+    aligned input to ±1e3. Without the floor this baseline does not merely degrade at small
+    N — it diverges to negative R². Pass std_floor=0.0 to reproduce that failure mode.
+    """
+    def __init__(self, decoder, src_stats_x, device="cpu", std_floor: float = 0.1):
         self.decoder = _freeze(decoder)
         self.mu_s, self.sd_s = (np.asarray(a, np.float32) for a in src_stats_x)
         self.device = device
+        self.std_floor = float(std_floor)
         self.mu_t, self.sd_t = self.mu_s, self.sd_s          # identity until adapted
 
     def adapt(self, X, Y=None):
-        self.mu_t, self.sd_t = source_input_stats(X)         # this session's own moments
+        mu, sd = source_input_stats(X)                       # this session's own moments
+        self.mu_t, self.sd_t = mu, np.maximum(sd, self.std_floor)
 
     def _align(self, X):
         X = np.asarray(X, np.float32)
@@ -144,6 +153,16 @@ def _selfcheck() -> None:
     mpa.adapt(Xt)
     assert err(mpa, Xt) < e_none, (err(mpa, Xt), e_none)
     assert torch.equal(dec.head.weight, w0)                  # frozen
+
+    # the std floor is load-bearing. Calibrate on a short slice where channel 0 happens to
+    # be quiet, then decode the rest of the session where it isn't: the unfloored aligner
+    # divides that channel's real deviations by ~0 and explodes. Floored stays bounded.
+    Xq = Xt[:25].copy()
+    Xq[:, 0, :] = Xq[:, 0, :].mean() + 1e-3 * rng.standard_normal(Xq[:, 0, :].shape)
+    hot, cold = MPA(dec, source_input_stats(Xs), std_floor=0.0), MPA(dec, source_input_stats(Xs))
+    hot.adapt(Xq); cold.adapt(Xq)
+    assert np.abs(hot._align(Xt)).max() > 100 * np.abs(cold._align(Xt)).max()
+    assert err(cold, Xt) < err(hot, Xt)                      # and the floor is what saves R²
 
     # NoMAD: learned readin matching source latent moments -> beats No-Adapt, decoder frozen
     nomad = NoMAD(dec, C, source_latent_moments(dec, Xs), lr=0.05, steps=80)

@@ -3,190 +3,130 @@
 Living to-do list for the **software artifact**. Updated as work lands.
 Status: ☐ todo · ◐ in progress · ☑ done · ⊘ out of scope (wet-lab/hardware).
 
-_Last updated: 2026-07-23._ **► Current focus: [Phase 11 — CADENCE](#phase-11--cadence-collapse-resistant-structured-test-time-adaptation)** (NeurIPS 2026 workshop, ~2 mo). Phases 0–10 below are the completed history that motivates it.
+_Last updated: 2026-07-23._ **► Current focus: [Phase 11 — the decomposition paper](#phase-11--the-decomposition-paper-post-review-rebuild)** (NeurIPS 2026 workshop, ~2 mo), rebuilt against the review in [BETTER.md](BETTER.md). Phases 0–10 below are the completed history that motivates it.
 
 ---
 
-# PHASE 11 — CADENCE: collapse-resistant structured test-time adaptation
+# PHASE 11 — the decomposition paper (post-review rebuild)
 
 _Target venue: **NeurIPS 2026 Workshop "Towards Test-Time Continual Learning Agents"**
-(~2-month horizon). The exact CFP page isn't posted yet, so the timeline/format is
-calibrated to **ICLR-2026 Test-Time Updates (TTU)** and **ICML-2026 Continual Adaptation
-at Scale (CATS)** as first-class same-paper fallbacks. Design spec:
-`docs/superpowers/specs/2026-07-23-b2ss-cadence-continual-tta-design.md`._
+(~2-month horizon), with ICLR-2026 TTU and ICML-2026 CATS as same-paper fallbacks.
+Design spec: `docs/superpowers/specs/2026-07-23-b2ss-cadence-continual-tta-design.md`.
+Framing: [PAPER_OUTLINE.md](PAPER_OUTLINE.md). Numbers: [RESULTS.md](RESULTS.md) §9._
 
-**Why this exists.** Phase 10 proved the conduction normaliser wins big on *controlled/
-injected* data but is **null on real cross-session gaps** (MC_Maze S/M/L −0.015, EEG
-−0.003) because those gaps are unit turnover / tuning drift, not timing. A characterization
-of that null is not a victory. CADENCE reframes the whole project around what the workshop
-actually rewards — **source-free, label-free, online adaptation over a lifelong stream,
-judged on continual metrics and an accuracy-vs-cost Pareto** — where a genuine, honest win
-*is* reachable.
+**Why this phase exists, twice over.** Phase 10 proved conduction normalisation wins on
+controlled/injected data but is null on real cross-session gaps. Phase 11 first tried to
+rescue that with a structured online adapter (CADENCE) and claimed it "beats every
+competitor in the data-scarce regime." An adversarial review ([BETTER.md](BETTER.md))
+took that apart: the headline was contradicted by our own `results/indy_stream.json`,
+where MPA beat CADENCE on every axis, and a third of the reported margin came from a
+missing scale floor in the MPA baseline rather than from the method. The phase was
+rebuilt around what survived.
 
-**The concept (one line).** Freeze a strong source decoder; adapt only a tiny (~16–32-param)
-*composed, structured* module online across a stream of recording sessions, and claim the
-one point no baseline can occupy — **high cumulative/worst-session accuracy AND collapse-free**
-— at 2–3 orders of magnitude fewer adapted params than retraining.
+### What the review changed (all landed)
 
-### Strategic decisions (locked with the PI)
-- **Victory type = Pareto/stability, not accuracy-SOTA.** Conduction/timing does *not*
-  carry an accuracy win on real gaps — this null is **stated up front, in the abstract**,
-  as a credibility signal, not buried in limitations. Accuracy is carried by a *borrowed*
-  representation aligner; the conduction term earns its place as (1) the biophysically-
-  bounded safe **revert-anchor** and (2) a ground-truth-validated **drift-decomposition
-  diagnostic**.
-- **Headline arena = the monkey-Indy ~23-session grid-reach stream** (O'Doherty/Makin/Sabes,
-  DANDI). The only public **long + labeled** stream where continual metrics are computable
-  — the same data MPA and NoMAD report on. (FALCON dropped this cycle: withheld labels make
-  the continual headline uncomputable.)
-- **Fallback floor = the drift-decomposition benchmark** (~80% already in hand) — a complete,
-  honest, workshop-native paper that needs no Indy port, no free-TTA collapse, and no baseline
-  reimplementations. The 2 months are never wasted.
+| Finding | Fix |
+| --- | --- |
+| MPA baseline had no scale floor; diverged at small N | `MPA(std_floor=0.1)`; both variants reported as separate rows |
+| "Full calibration N=2000" was 13% of the session | budget grid extends to `all` (~15k windows, ~300 s) |
+| Headline margin measured against a diverging baseline | headline is now vs No-Adapt and vs *floored* MPA |
+| MPA beat CADENCE on the stream, unstated | stated in the results and in the script's verdict string |
+| Structure ablation confounded structure with optimiser | ablation is Tent vs free-LoRA (gradient-fit on both sides) |
+| Collapse-rate identical for method and null method | replaced by **regret vs No-Adapt**; collapse-rate kept as secondary |
+| τ=200 unvalidated, mid-grid | `run_tau_sweep.py`: OAT sweep + leave-one-session-out selection |
+| Retrain ceiling trained from scratch | ceiling now fine-tunes the frozen decoder **and** re-normalises with the session's own input statistics — see "the ceiling bug" below |
+| Conduction anchor never ran (identity op) | removed from CADENCE; conduction survives as the decomposition diagnostic |
+| Seeds pooled as independent draws | `stats.paired_by_unit`: sessions are the unit, seeds averaged within; BH-corrected |
+| Shrinkage presented as a new mechanism | positioned against empirical Bayes / AdaBN / EA in BACKGROUND §10 |
 
-### The method (CADENCE)
-- **Frozen backbone** — a strong within-session GRU (`baselines.GRUDecoder`, *not* the
-  within-session-uncompetitive B2SS decoder), pretrained once on the earliest held-in
-  sessions and never updated → the stable "memory."
-- **Slow anchor** — the existing `transfer.ConductionDelayAligner` (K≈8–16 grouped delays),
-  EMA-consolidated at a low learning rate so it holds only the slow timing component → the
-  interpretable, hard-to-drift revert target.
-- **Fast head** — a *borrowed* representation aligner (CORAL/Euclidean re-centering +
-  NoMAD-style latent-moment match on the `decoder.head` forward hook already in
-  `transfer.py`), rank-1…8 → absorbs the fast unit-turnover/tuning drift the anchor can't.
-- **Controller** — a collapse-sensor watches the unsupervised loss + latent-norm trajectory;
-  on divergence it resets the fast head toward the anchor's implied latent (safe *because*
-  the anchor is a valid low-DOF biophysical state, unlike reverting to raw source).
-- **Streaming protocol** — sessions replayed in temporal order with PeTTA-style revisits;
-  adapter state carried forward across sessions (no oracle reset); backbone frozen throughout.
+### The ceiling bug — the one the review itself missed
 
-### Headline experiment & win condition
-One decisive figure — the **accuracy × stability plane**: x = cumulative online velocity R²,
-y = collapse-rate (fraction of sessions under an a-priori R² floor) + worst-session R²; plus
-a backward-transfer/forgetting bar on revisited sessions and an accuracy-vs-params/label-budget
-Pareto. **Win = CADENCE Pareto-dominates:** strictly above No-Adapt on cumulative R² while
-matching its collapse-rate; strictly below every free-TTA method and MPA on collapse-rate;
-beats RDumb reset over the full stream.
+Fixing "trains from scratch" moved the recalibration ceiling by 0.004 and looked like
+vindication. It wasn't. The ceiling was being fed inputs z-scored with the **source**
+session's statistics — the precise handicap the alignment baselines exist to remove.
+Measured on three sessions, identical data and schedule, only the input frame differing:
 
-**Make-or-break ablation (pre-registered): a free-LoRA head at *matched parameter count*.**
-If CADENCE's stability edge survives at matched params → the win is the interpretable
-**structure** (the novel claim). If it only survives at fewer params → it collapses into the
-known "low-dim beats free TTA" result, and that is reported straight.
+| | frozen | fine-tune, source-normalised | fine-tune, own-normalised | scratch, own-normalised |
+| --- | --- | --- | --- | --- |
+| velocity R² | 0.511 | **0.024** | **0.741** | **0.764** |
 
-**Baselines (must-have):** No-Adapt (accuracy floor / stability ceiling), **RDumb** periodic
-reset (credibility gate), **Tent**, **CoTTA**, **EATA/SAR**, **RoTTA** (all re-derived for the
-BN-free GRU regressor), **MPA** (nearest neighbour / scoop risk), **NoMAD** (strong iBCI
-stabiliser), free-LoRA(matched), full-retrain (cost ceiling). EEG secondary: Euclidean/
-Riemannian Alignment + **T-TIME** on a frozen EEGNet (MOABB Zhou2016).
+**Per-session recalibration wins this stream outright.** The claim "frozen + cheap
+adaptation beats per-session retraining" is dead in both the from-scratch and the fine-tune
+form, and the honest statement of what label-free adaptation buys is **cheapness, not
+accuracy**: 2·n_chan parameters and no labels, at a real accuracy cost.
 
-### Build status (first full run)
+Related, and worth reporting on its own: a fresh per-session decoder scores 0.765 on a
+chronological split and 0.952 on a random one. Within-session non-stationarity is real, and
+it is a 0.19 effect — not the 0.6 the broken ceiling implied.
 
-Built + tested (**27 self-checks green**), on **real** data (11 monkey-Indy sessions,
-Zenodo 583331, downloaded + loaded): `continual.py`, `stream.py`, `indy.py`
-(real-session validated: 96 electrodes, within-session Ridge R² 0.499), `cadence.py`,
-`tta_baselines.py` (No-Adapt/Tent/CoTTA/RDumb/free-LoRA), `ibci_baselines.py`
-(MPA/NoMAD-style), `run_indy_stream.py`, `run_decomposition_figure.py`.
+### The claim now
 
-**Headline result — CADENCE beats every competitor in the data-scarce online regime.** The
-realistic online-BCI setting: decode from the first few calibration windows of each new
-session. CADENCE's **consolidation shrinkage** (shrink each per-channel calibration estimate
-toward the source prior by n/(n+τ)) holds **~0.45 R² from just 25 windows**, while a plain
-per-channel standardiser (MPA) has noisy stats there and goes **negative** (−0.22), only
-catching up at full calibration (3 seeds; [RESULTS.md](RESULTS.md) §9.1, figure
-`results/indy_calibration.png`). CADENCE beats MPA/Tent/free-LoRA/No-Adapt at every small
-budget; **ties MPA at full calibration** (0.515 vs 0.510) — the win is scoped to the scarce
-regime, conceded openly. Secondary: matched-parameter *unstructured* adaptation (dense
-free-LoRA; full-rank NoMAD-style) **catastrophically collapses** (R² < 0, collapse-rate 1.00)
-while structured per-channel adaptation does not — the structure ablation (§9.2).
+**Spine:** a calibrated decomposition of the cross-session gap into timing and
+representation, with a positive control that separates and two real-data nulls.
 
-**Honest scoping (stated, not hidden):** the win is the data-scarce regime (ties MPA with
-ample data). Without a measured CV the conduction anchor is dormant on Indy (~0 accuracy) —
-its value is the drift decomposition (§9.4) and, where a measured CV exists, a timing prior.
-The contributions are the consolidation-shrinkage adapter (dominates the online data-efficiency
-curve) + collapse-resistance/structure-ablation + the continual-stream iBCI protocol + the
-conduction decomposition.
+**Consequence:** the drift that dominates is per-channel gain/offset; per-session estimation
+of it is data-starved and the standard standardiser *diverges* below ~200 windows on a
+sparse array; evidence-weighted shrinkage fixes that.
 
-**Descoped (not essential to the claim):** EATA/SAR/RoTTA free-TTA variants (Tent/CoTTA/
-RDumb cover the family); the cross-covariance objective upgrade (moment-match sufficed);
-a FALCON leaderboard entry (Indy is the computable-metric arena).
+**Conceded up front:** the estimator is textbook empirical Bayes; the adapter does not lead
+the stream once calibration data is ample; **per-session recalibration beats every label-free
+adapter, so what these methods buy is cheapness, not accuracy**; the conduction term carries
+no accuracy on any real gap; one subject.
 
-### Week-by-week
+### Method (CADENCE, as it actually is)
 
-**W1–2 — Tap-root: Indy port + frozen backbone + metric harness** _(everything downstream gates on this)_
-- ☐ Port `b2ss/intracortical.py` from the MC_Maze dandiset to the Indy grid-reach dandiset
-  (self-paced continuous format, different unit/behaviour schema); validate the loader
-- ☐ Pretrain + **freeze** a GRU backbone on the earliest held-in sessions; confirm
-  within-session R² is competitive (so gains aren't dismissed as fixing a weak model)
-- ☐ Add continual metrics to `b2ss/stats.py`: cumulative online R², worst-session R²,
-  collapse-rate, backward-transfer/forgetting
-- ☐ Build the online streaming loop (temporal order + PeTTA-style revisit schedule)
+Frozen GRU backbone (`baselines.GRUDecoder`) + a per-channel affine head, fit in closed form
+by consolidation shrinkage `w = n/(n+τ)` toward the source prior, with a scale floor. 2·n_chan
+adapted parameters. Memoryless across sessions by construction (hence BWT = 0 — a property,
+not an achievement; MPA shares it). A collapse controller guards the expressive `head='lora'`
+variant used as the structure ablation; it does not fire for the closed-form head.
 
-**W3–4 — Method: composed adapter + controller**
-- ☐ Add the borrowed representation head (CORAL/Euclidean + NoMAD-style latent-moment match
-  on the `decoder.head` hook, ~50–80 lines)
-- ☐ Convert `ConductionDelayAligner` to a slow-EMA anchor; wire the collapse-sensor +
-  revert-to-anchor controller (~40 lines)
-- ☐ Upgrade the label-free objective to a **delay-sensitive cross-covariance/lag** form
-  (the current CORAL-moment version fails at 0.302 < no-norm on the controlled rig)
-- ☐ Stand up the matched-parameter free-LoRA head for the make-or-break ablation
+### Build status
 
-**W5–6 — Baseline battery (critical path) + Week-4 go/no-go**
-- ☐ Re-derive Tent/CoTTA/EATA/SAR/RoTTA for the BN-free GRU regressor; RDumb is trivial
-- ☐ Reimplement **MPA** on the Indy data (head-to-head) and **NoMAD** (the strong stabiliser);
-  sanity-check each against its published regime
-- ☐ **GO/NO-GO:** run No-Adapt + Tent + CoTTA over the full stream — confirm free-TTA visibly
-  accumulates error / collapses. If it stays stable on Indy, trigger the fallback
-  decomposition-benchmark headline **now** (don't sink weeks chasing a contrast that isn't there)
-- ☐ Wire all methods through one shared streaming harness
+All modules and scripts built and green (**30 self-checks / tests**), on **real** data
+(11 monkey-Indy sessions, Zenodo 583331): `continual.py` (+ regret), `stream.py`, `indy.py`
+(96 electrodes; `--subject loco` ready for the second monkey), `cadence.py`, `tta_baselines.py`,
+`ibci_baselines.py` (floored MPA + NoMAD), `stats.py` (+ `paired_by_unit`),
+`run_indy_calibration.py`, `run_tau_sweep.py`, `run_indy_stream.py`,
+`run_decomposition_figure.py`. All wired into `scripts/reproduce.py`.
 
-**W6–7 — Decomposition + breadth** _(overlaps the Phase-2 tail)_
-- ☐ Injected-delay MC_Maze rig = the ground-truth **timing-dominated** bracket (already positive:
-  zero-shot 0.649 vs retrain 0.403)
-- ☐ Real MC_Maze S/M/L = the **representation-dominated** null bracket (report −0.015 straight)
-- ☐ MOABB Zhou2016 EEG secondary stream: frozen EEGNet + EA/Riemannian + T-TIME
+### Pre-registered criteria — outcome, reported straight
 
-**W7–8 — Multi-seed stats + write-up**
-- ☐ Multi-seed (≥5) across all methods × streams; separated CIs via `stats.mean_ci`/FDR
-- ☐ Resolve the matched-param free-LoRA ablation; report the structure verdict straight
-- ☐ Assemble the accuracy×stability Pareto figure + the decomposition figure; write the
-  4-page paper with the cite-and-differentiate table and the up-front honest concessions
+The Phase-11 criteria were written before the runs. Most were **not met**, and the paper is
+built on what was:
 
-### Pre-registered success criteria (honest go/no-go)
-- **PRIMARY:** on the Indy stream, CADENCE achieves cumulative online R² strictly above
-  No-Adapt (separated CIs) **and** collapse-rate ≤ No-Adapt — genuine two-axis Pareto-dominance,
-  not stability-by-correcting-nothing.
-- **PRIMARY:** CADENCE's collapse-rate < every free-TTA baseline and < MPA, with worst-session
-  R² strictly higher, over the full stream (separated CIs).
-- **PRIMARY:** CADENCE beats RDumb periodic reset on cumulative online R².
-- **STRUCTURE ISOLATION:** the matched-param free-LoRA head loses to CADENCE on
-  collapse-rate/worst-session. If it ties → contribution narrows to protocol + decomposition,
-  reported straight (still a paper), and we know by Week 6 not Week 8.
-- **DECOMPOSITION (guaranteed):** injected rig shows a CI-separated positive timing marginal;
-  real cross-session shows an honestly-reported near-null timing marginal — the two brackets.
-- **Concessions stated up front:** peak R² conceded to full-retrain; the timing term adds ~0
-  accuracy on turnover-dominated gaps (its value is consolidation/collapse-safety + diagnostics);
-  the accuracy lift over No-Adapt is carried by the borrowed alignment head.
+- ✗ **PRIMARY — Pareto-dominance on the stream.** Not achieved. CADENCE (+0.540) is above
+  No-Adapt (+0.408, p=0.003) but does not beat MPA (+0.575, Δ −0.035, p=0.252), and the
+  collapse-rate axis turned out to be degenerate.
+- ✗ **PRIMARY — collapse-rate below every free-TTA baseline and MPA.** The metric could not
+  support this: No-Adapt, MPA, CoTTA, RDumb and CADENCE all score exactly 0.10 on all three
+  seeds. Replaced by **regret vs No-Adapt**, on which CADENCE does score cleanly — it is the
+  only adapter with regret 0.00/0.000 (never loses to the frozen decoder on any visit), while
+  MPA loses on 10% of visits and Tent on 50%.
+- ✗ **PRIMARY — beats RDumb over the full stream.** +0.035, p=0.238. Not significant.
+- ✗ **"Frozen + cheap adaptation beats per-session retraining."** The opposite is true once
+  the ceiling is measured fairly: recalibration reaches **+0.757** (scratch) / **+0.741**
+  (fine-tune) against the best adapter's +0.575. See "the ceiling bug" above.
+- ✓ **STRUCTURE ISOLATION.** Matched-parameter dense adaptation collapses where diagonal does
+  not, with the optimiser held fixed: **Tent − free-LoRA = +0.556 [+0.337, +0.776], p<0.001,
+  10/10 visits.** The original CADENCE-vs-free-LoRA framing confounded structure with
+  optimiser and is not used.
+- ✓ **DECOMPOSITION (guaranteed).** Both brackets landed: **+0.250 [+0.191, +0.309]** on the
+  injected rig, **−0.015 [−0.027, −0.004]** on real cross-session, **−0.003** on EEG.
+- ✓ **Concessions stated up front** — now including the ones the review forced, and the one
+  the review itself missed.
 
-### Risks & mitigations
-- **Indy stream too gradual to force free-TTA collapse** (biggest, out of our control) →
-  run the recurring/revisit protocol to amplify accumulation; stress the batch=1/short-window
-  regime where entropy-TTA provably breaks; Week-4 go/no-go pivots to the fallback if free-TTA
-  never collapses.
-- **Novelty desk-reject ("MPA + CoTTA + PeTTA + a borrowed aligner")** → relocate load-bearing
-  novelty to the first continual-stream iBCI protocol (collapse/forgetting metrics), the
-  matched-param structure ablation, and the ground-truth drift decomposition; cite-and-
-  differentiate MPA/NoMAD/T-TIME/DCLS/PeTTA in one table; concede the phase null openly.
-- **Baseline fidelity is the critical path (~2.5 wk)** — a weakly-tuned competitor makes the
-  win non-credible → budget it explicitly; never drop RDumb, Tent, MPA, or the matched-param
-  free-LoRA; if time slips, drop the weakest 2 free-TTA variants only.
-- **Indy DANDI port is real work, not "same pynwb pattern"** → treat as W1–2 tap-root with
-  explicit backbone validation before anything downstream; MC_Maze + MOABB fallbacks already
-  load, so a slipping port degrades gracefully to the decomposition paper.
+The fallback identified at planning time ("the decomposition benchmark is a complete, honest
+paper on its own") is what the paper became. That was the correct call to have pre-registered.
 
-### Reused assets (little of this is from scratch)
-`transfer.py` (`ConductionDelayAligner`, `TransferNormalizer`, the `decoder.head` hook,
-3 fitting modes) · `intracortical.py` MC_Maze loader (port target) · `baselines.GRUDecoder`
-· the injected-delay rig in `run_transfer_modes.py` · the MOABB loader in `run_moabb_transfer.py`
-· `stats.py` (CIs/FDR, extend with continual metrics) · 21 green tests.
+### Risks — resolved or live
+
+- ~~Indy stream too gradual to force free-TTA collapse~~ → resolved: free-TTA does collapse
+  (NoMAD, free-LoRA both go negative with regret 1.00).
+- **Novelty desk-reject ("this is empirical Bayes")** → live, and now answered directly rather
+  than deflected: BACKGROUND §10 concedes the estimator and states the narrow claim. If the
+  paper does not say it first, a reviewer will.
+- **Single subject** → live and unresolved. `--subject loco` exists; the download does not.
 
 ---
 
