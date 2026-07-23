@@ -1,21 +1,29 @@
-"""CADENCE — collapse-resistant structured test-time adapter.
+"""CADENCE — consolidation-shrinkage test-time adapter.
 
-Wraps a FROZEN decoder with a tiny composed adapter that is the only thing that
-moves at test time:
+Wraps a FROZEN decoder with a per-channel affine head that is the only thing moving at
+test time:
 
-    x ──▶ [ fast head: per-channel affine ] ──▶ [ slow anchor: conduction delay ] ──▶ FROZEN decoder
+    x ──▶ [ per-channel affine, fit by consolidation shrinkage ] ──▶ FROZEN decoder
 
-- fast head (gain_c, bias_c per channel): the cheap CORAL/Euclidean-style re-centering
-  that absorbs fast firing-rate / offset drift — refit per session, unsupervised.
-- slow anchor (ConductionDelayAligner, K group delays): biophysically-bounded, EMA-
-  consolidated timing correction; also the SAFE revert target when the fast head diverges.
-- controller: watches the unsupervised objective; on a drift spike it reverts the fast
-  head to identity, falling back to the anchor (a valid low-DOF state) rather than to
-  a drifted mess — the collapse-resistance the free-TTA baselines lack.
+The whole method is how that affine is set. A plain per-session standardiser (MPA) takes
+each channel's mean/std straight from the current session's calibration windows; with few
+windows those estimates are noisy and the resulting decode degrades badly. CADENCE shrinks
+each estimate toward the source prior with weight w = n/(n+tau) (empirical-Bayes /
+James-Stein), so the adapter starts near the identity and earns its way to a full
+standardiser as calibration data arrives. Adapted DOF = 2*n_chan, 2-3 orders below a
+retrain.
 
-The conduction term does not carry accuracy on turnover-dominated real gaps (conceded
-up front); its jobs here are collapse-safety and the drift-decomposition diagnostic.
-Adapted DOF = 2*n_chan (affine) + K (delays), 2-3 orders below a full retrain.
+The controller (collapse sensor) reverts the head to identity when the unsupervised
+objective spikes. For the closed-form affine head it does not fire in normal use — it
+exists to guard the expressive `head='lora'` variant, which is the structure ablation
+(`tta_baselines.free_lora`), not the method.
+
+EARLIER DESIGN, REMOVED: this adapter used to compose the affine with a
+`ConductionDelayAligner` "slow anchor". On every stream we ran, no measured conduction
+velocity exists, the anchor's delays stayed at zero, and it was an exact identity op — so
+it is gone from the method. Conduction survives where it is actually load-bearing: as the
+drift-decomposition diagnostic in `scripts/run_decomposition_figure.py`, built on
+`transfer.ConductionDelayAligner`.
 """
 
 from __future__ import annotations
@@ -24,7 +32,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .transfer import ConductionDelayAligner, source_feature_stats
+from .transfer import source_feature_stats
 
 
 def _t(a, device="cpu"):
@@ -48,8 +56,7 @@ def unsup_objective(module, x_batch, src_mean, src_var) -> torch.Tensor:
 
 
 class CADENCE(nn.Module):
-    def __init__(self, decoder: nn.Module, n_chan: int, *, n_groups: int = 8,
-                 max_delay: float = 12.0, anchor_ema: float = 0.9, fast_lr: float = 0.05,
+    def __init__(self, decoder: nn.Module, n_chan: int, *, fast_lr: float = 0.05,
                  fast_steps: int = 20, collapse_z: float = 3.0, src_stats=None,
                  head: str = "affine", rank: int = 1, reg: float = 0.0,
                  std_floor: float = 0.1, shrink_tau: float = 200.0, device: str = "cpu"):
@@ -66,8 +73,7 @@ class CADENCE(nn.Module):
             self.V = nn.Parameter(0.01 * torch.randn(n_chan, rank))
         else:
             raise ValueError(f"head must be 'affine' or 'lora', got {head}")
-        self.aligner = ConductionDelayAligner(n_chan, n_groups, max_delay)  # slow anchor
-        self.anchor_ema, self.fast_lr = float(anchor_ema), float(fast_lr)
+        self.fast_lr = float(fast_lr)
         self.fast_steps, self.collapse_z = int(fast_steps), float(collapse_z)
         self.device = device
         sm, sv = (src_stats if src_stats is not None else (torch.zeros(1), torch.ones(1)))
@@ -93,9 +99,7 @@ class CADENCE(nn.Module):
         return [self.gain, self.bias] if self.head_mode == "affine" else [self.U, self.V]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self._apply_head(x)                                       # fast head
-        x = self.aligner(x)                                           # slow anchor delay
-        return self.decoder(x)
+        return self.decoder(self._apply_head(x))
 
     def _reset_fast_head(self) -> None:
         with torch.no_grad():
@@ -130,18 +134,6 @@ class CADENCE(nn.Module):
         self.bias.copy_(-m_s / s_s)
         self._init_gain.copy_(self.gain)
         self._init_bias.copy_(self.bias)
-
-    @torch.no_grad()
-    def set_anchor(self, group_delays) -> None:
-        """Zero-shot: set the conduction anchor directly from a measured/known CV."""
-        self.aligner.set_group_delays(group_delays)
-
-    @torch.no_grad()
-    def ema_anchor(self, target_group_delays) -> None:
-        """Slow EMA consolidation of the anchor toward a per-session target delay:
-        delta <- ema*delta + (1-ema)*target. Holds the slow timing component."""
-        tgt = torch.as_tensor(target_group_delays, dtype=torch.float32, device=self.aligner.delta.device)
-        self.aligner.delta.mul_(self.anchor_ema).add_((1 - self.anchor_ema) * tgt)
 
     # -- adaptation --------------------------------------------------------- #
     def adapt(self, X, Y=None) -> None:
@@ -198,11 +190,10 @@ class CADENCE(nn.Module):
 # --------------------------------------------------------------------------- #
 def _selfcheck() -> None:
     from types import SimpleNamespace
-    from .model import fractional_shift
 
     class ToyDecoder(nn.Module):
-        """Fixed linear decoder reading each channel's window CENTRE, so both a temporal
-        shift (anchor) and a per-channel gain (fast head) are cleanly identifiable."""
+        """Fixed linear decoder reading each channel's window CENTRE, so a per-channel
+        gain is cleanly identifiable."""
         def __init__(self, n_chan, win, n_out=2):
             super().__init__()
             self.cfg = SimpleNamespace(task="regression", n_out=n_out)
@@ -213,8 +204,7 @@ def _selfcheck() -> None:
             return self.head(x[:, :, self.mid])
 
     rng = np.random.default_rng(0)
-    C, W, N, K = 16, 20, 800, 4
-    gids = np.arange(C) % K
+    C, W, N = 16, 20, 800
     amp = rng.standard_normal((N, C)).astype("float32")
     ramp = (np.arange(W) / W).astype("float32")
     Xs = (amp[:, :, None] * ramp[None, None, :]).astype("float32") \
@@ -229,29 +219,32 @@ def _selfcheck() -> None:
     def err(mod, X, Y):
         return float(((mod.predict(X) - Y) ** 2).mean())
 
-    # (1) SHIFT gap -> zero-shot anchor (measured CV) recovers, and beats No-Adapt.
-    known = np.array([0.0, 3.0, -2.0, 4.0], dtype="float32")
-    Xt = fractional_shift(_t(Xs), _t(known[gids])).detach().numpy()
-    cad = CADENCE(dec, C, n_groups=K, max_delay=8, src_stats=(smean, svar))
-    e_none = err(cad, Xt, Ys)                                 # identity adapter = No-Adapt
-    cad.set_anchor(-known)
-    assert err(cad, Xt, Ys) < e_none, (err(cad, Xt, Ys), e_none)
-    assert torch.allclose(cad.decoder.head.weight, w0)       # decoder frozen
-
-    # (2) GAIN-drift gap -> few-shot supervised adapt recovers (fast head learns ~1/gain).
+    # (1) THE METHOD: consolidation shrinkage interpolates between doing nothing (few
+    # windows -> w = n/(n+tau) small -> head near identity) and a full standardiser
+    # (ample windows -> w -> 1 -> the MPA solution). Both ends must be right.
     gain_c = (1.0 + 0.5 * rng.standard_normal(C)).astype("float32")
     Xg = (Xs * gain_c[None, :, None]).astype("float32")
-    cad2 = CADENCE(dec, C, n_groups=K, max_delay=8, fast_steps=120, fast_lr=0.1, reg=0.0,
-                   src_stats=(smean, svar))
+    cad = CADENCE(dec, C, shrink_tau=200.0, src_stats=(smean, svar))
+    cad.init_standardize(Xg[:5])                             # n=5 << tau -> barely moves
+    g, b = cad.gain.detach(), cad.bias.detach()
+    assert float((g - 1).abs().max()) < 0.1 and float(b.abs().max()) < 0.1
+    cad.init_standardize(Xg)                                 # n=800 >> tau -> ~full standardise
+    with torch.no_grad():
+        z = cad._apply_head(_t(Xg))
+    assert abs(float(z.mean())) < 0.2 and 0.8 < float(z.std()) < 1.25
+    assert torch.allclose(cad.decoder.head.weight, w0)       # decoder frozen throughout
+
+    # (2) GAIN-drift gap -> few-shot supervised adapt recovers (fast head learns ~1/gain).
+    cad2 = CADENCE(dec, C, fast_steps=120, fast_lr=0.1, reg=0.0, src_stats=(smean, svar))
     e0 = err(cad2, Xg, Ys)
     cad2.adapt(Xg, Ys)                                       # few-shot (labels available)
     assert err(cad2, Xg, Ys) < e0, (err(cad2, Xg, Ys), e0)
     assert torch.allclose(cad2.decoder.head.weight, w0)      # still frozen
 
-    # (3) Controller (safety net): the collapse-sensor reverts the fast head when the
-    # objective spikes. Tested directly — for the affine method the closed-form init keeps
-    # the head safe so it never fires in normal use; it guards an expressive/lora head.
-    cad3 = CADENCE(dec, C, n_groups=K, max_delay=8, collapse_z=2.0, src_stats=(smean, svar))
+    # (3) Controller (safety net): the collapse-sensor reverts the head when the objective
+    # spikes. Tested directly — for the closed-form affine it never fires in normal use;
+    # it guards the expressive lora head used as the structure ablation.
+    cad3 = CADENCE(dec, C, collapse_z=2.0, src_stats=(smean, svar))
     for _ in range(4):
         cad3._collapse_check(_t(Xs))                         # build a calm history
     with torch.no_grad():
@@ -261,30 +254,30 @@ def _selfcheck() -> None:
     assert cad3.n_reverts == r0 + 1                          # reverted
     assert torch.allclose(cad3.gain, torch.ones(C)) and torch.allclose(cad3.bias, torch.zeros(C))
 
-    # (4) EMA slowness: one ema_anchor step moves delta by (1-ema) of the target.
-    cad4 = CADENCE(dec, C, n_groups=K, max_delay=8, anchor_ema=0.9, src_stats=(smean, svar))
-    tgt = np.array([2.0, -2.0, 4.0, -4.0], dtype="float32")
-    cad4.ema_anchor(tgt)
-    moved = cad4.aligner.delta.detach().numpy()
-    assert np.allclose(moved, 0.1 * tgt, atol=1e-5), moved
+    # (4) memoryless by construction: two sessions in a row leave no trace of the first,
+    # which is why the stream BWT is exactly 0 (a property, not an achievement — MPA
+    # shares it; Tent, which carries state forward, does not).
+    cad4 = CADENCE(dec, C, src_stats=(smean, svar))
+    cad4.adapt(Xs)
+    g_solo = cad4.gain.detach().clone()
+    cad4.adapt(Xg); cad4.adapt(Xs)
+    assert torch.allclose(cad4.gain, g_solo)
 
     # (5) closed-form init sets a BOUNDED standardising affine (silent channels do NOT
     # explode to 1/std ~ 1e6), roughly standardises the input, and a regularized few-shot
     # refine stays finite. Xg has a silent-ish channel to exercise the std floor.
     Xg2 = Xg.copy(); Xg2[:, 0, :] = 0.0                      # a silent channel
-    cad5 = CADENCE(dec, C, n_groups=K, max_delay=8, reg=0.1, std_floor=0.1,
-                   fast_steps=30, src_stats=(smean, svar))
+    cad5 = CADENCE(dec, C, reg=0.1, std_floor=0.1, fast_steps=30, src_stats=(smean, svar))
     cad5.init_standardize(Xg2)
-    assert float(cad5.gain.abs().max()) <= 1.0 / cad5.std_floor + 1e-3    # no explosion (the bug fix)
+    assert float(cad5.gain.detach().abs().max()) <= 1.0 / cad5.std_floor + 1e-3   # no explosion
     with torch.no_grad():
         z = cad5._apply_head(_t(Xg2))
     assert abs(float(z.mean())) < 0.5 and 0.4 < float(z.std()) < 1.6       # roughly standardized
     cad5.adapt(Xg2, Ys)                                      # regularized supervised refine
     assert np.isfinite(err(cad5, Xg2, Ys))
 
-    print(f"cadence.py self-check OK: anchor recovers shift ({e_none:.3f}->{err(cad, Xt, Ys):.3f}); "
-          f"fast head fixes gain ({e0:.3f}->{err(cad2, Xg, Ys):.3f}); collapse-revert + EMA OK; "
-          f"decoder frozen")
+    print(f"cadence.py self-check OK: shrinkage spans identity->standardiser; head fixes gain "
+          f"({e0:.3f}->{err(cad2, Xg, Ys):.3f}); collapse-revert + memoryless refit; decoder frozen")
 
 
 if __name__ == "__main__":

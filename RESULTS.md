@@ -1,13 +1,317 @@
-# B2SS — Results (v2)
+# B2SS — Results
 
-What the publication-grade experiments show, and — as important — what they don't.
-All numbers are reproducible from the scripts; raw data is in `results/*.json`.
-Everything here is CPU-only on synthetic or public data; none of it is evidence
-for the clinical hypotheses, which need the real study.
+What the experiments show, and — as important — what they don't. Every number is
+reproducible from the scripts; raw data is in `results/*.json`. Everything is CPU-only on
+public or synthetic data. Nothing here is evidence for a clinical hypothesis.
+
+**Read this first.** The project tested one idea four times and falsified it four times:
+that a measured conduction velocity helps a decoder. Part II records those falsifications
+in detail, because the mechanism of each failure is the interesting part. Part I is what
+came out of them — a calibrated measurement of *where* the cross-session gap actually
+lives, and the practical consequence of the answer.
+
+This document was rewritten against [BETTER.md](BETTER.md), an adversarial review that
+found the previous version's headline unsupported by its own JSON. Claims that did not
+survive that review are gone; the ones that replaced them are marked with the analysis
+that backs them.
 
 ---
 
-## 1. Gate ablation — "is CV information, or just a better prior?"
+# Part I — the result
+
+## I.1. The decomposition: where the cross-session gap lives
+
+Conduction alignment is used here as an **instrument**, not an adapter. Give a frozen
+decoder a per-channel temporal realignment fit to the target session, measure the change in
+velocity R² over no alignment, and you have the share of the gap attributable to timing —
+in the same units across settings.
+
+An instrument that reads zero everywhere measures nothing, so the first requirement is a
+setting where it must read positive. Real MC_Maze spikes with a **known per-group latency
+injected** provide it: there, timing is the entire gap by construction.
+
+| setting | conduction/timing marginal (Δ velocity R² over no-norm) |
+| --- | --- |
+| **positive control** — injected latency, real MC_Maze spikes | **+0.250 [+0.191, +0.309]** (CI-separated) |
+| real multi-session intracortical — MC_Maze S/M/L, per-electrode | **−0.015 [−0.027, −0.004]** (null) |
+| real cross-session EEG — Zhou2016 (accuracy units) | **−0.003** (null) |
+
+**The reading.** The instrument responds strongly where timing dominates and reads flat —
+slightly negative — on both real cross-session gaps. Conduction timing is **not** where the
+real multi-session gap lives. What is left is representation drift: unit turnover,
+firing-rate change, tuning change. Between two days of the same monkey on the same array,
+the recorded neurons themselves differ.
+
+**Scope, stated plainly.** The positive control is an oracle in *two* ways, not one: the
+conduction difference is injected and known, **and** the aligner is handed the same
+channel→group map (`arange(C) % 8`) used to generate it. That is correct for a control — it
+establishes the instrument's ceiling — and would be dishonest quoted as a result. Nothing
+here says a *measured* CV in a real cohort would read zero; it says timing does not explain
+the drift between sessions of one subject, which is a narrower claim.
+
+`python scripts/run_decomposition_figure.py` → `results/decomposition.png`.
+
+## I.2. The consequence: per-session calibration is data-starved, and the standard fix diverges
+
+If the gap is per-channel gain and offset, the obvious remedy is to standardise each
+session's channels — the MPA / AdaBN / Euclidean-alignment family. In the online BCI regime
+you must do that from the *first few windows* of a new session, before calibration data has
+accumulated. That is where it breaks.
+
+On the 96-electrode Indy array, **14.5% of channels have sd < 0.1 over a 25-window slice**
+(measured, `results/indy_calibration.json`). Estimating a per-channel scale from that slice
+and dividing by it does not degrade gracefully — it **diverges**. CADENCE shrinks each
+estimate toward the source prior by `w = n/(n+τ)` (empirical Bayes; the estimator is
+standard — BACKGROUND §10), so the adapter starts near the identity and earns its way to a
+full standardiser as evidence arrives.
+
+Frozen GRU on the 3 earliest sessions, adapt label-free from the first N windows of each of
+8 held-out sessions, 3 seeds. `all` = every training window in the session (~15k, ~300 s) —
+the true full-calibration point, not the 2000-window slice a previous version of this
+document called "full calibration."
+
+| method | N=25 | N=50 | N=100 | N=200 | N=500 | N=2000 | N=all |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| no-adapt | +0.409 | +0.409 | +0.409 | +0.409 | +0.409 | +0.409 | +0.409 |
+| mpa-nofloor | -0.217 | -0.074 | -0.004 | +0.149 | +0.250 | +0.510 | +0.530 |
+| mpa | +0.027 | +0.049 | +0.123 | +0.233 | +0.258 | +0.518 | +0.543 |
+| tent | +0.306 | +0.300 | +0.317 | +0.374 | +0.377 | +0.489 | +0.489 |
+| free-lora | -0.534 | -0.419 | -0.368 | -0.560 | -0.316 | -0.332 | -0.277 |
+| cadence | +0.437 | +0.455 | +0.464 | +0.455 | +0.396 | +0.515 | +0.544 |
+
+
+**CADENCE − no-adapt**
+
+| N | Δ R² | 95% CI | p | sessions won | survives BH |
+| --- | --- | --- | --- | --- | --- |
+| 25 | +0.029 | [+0.016, +0.041] | 0.001 | 8/8 | yes |
+| 50 | +0.047 | [+0.016, +0.077] | 0.008 | 7/8 | yes |
+| 100 | +0.056 | [+0.004, +0.107] | 0.038 | 7/8 | no |
+| 200 | +0.047 | [-0.020, +0.113] | 0.140 | 7/8 | no |
+| 500 | -0.013 | [-0.120, +0.094] | 0.777 | 5/8 | no |
+| 2000 | +0.106 | [+0.046, +0.166] | 0.004 | 8/8 | yes |
+| all | +0.135 | [+0.062, +0.209] | 0.003 | 7/8 | yes |
+
+**CADENCE − MPA (floored)**
+
+| N | Δ R² | 95% CI | p | sessions won | survives BH |
+| --- | --- | --- | --- | --- | --- |
+| 25 | +0.410 | [+0.173, +0.647] | 0.005 | 8/8 | yes |
+| 50 | +0.406 | [+0.067, +0.745] | 0.025 | 8/8 | no |
+| 100 | +0.342 | [+0.031, +0.653] | 0.035 | 8/8 | no |
+| 200 | +0.222 | [-0.022, +0.466] | 0.068 | 8/8 | no |
+| 500 | +0.138 | [-0.030, +0.305] | 0.094 | 8/8 | no |
+| 2000 | -0.003 | [-0.016, +0.009] | 0.537 | 4/8 | no |
+| all | +0.001 | [-0.001, +0.003] | 0.183 | 6/8 | no |
+
+**MPA (floored) − no-adapt**
+
+| N | Δ R² | 95% CI | p | sessions won | survives BH |
+| --- | --- | --- | --- | --- | --- |
+| 25 | -0.382 | [-0.618, -0.146] | 0.006 | 0/8 | yes |
+| 50 | -0.359 | [-0.695, -0.024] | 0.039 | 0/8 | no |
+| 100 | -0.286 | [-0.585, +0.012] | 0.058 | 2/8 | no |
+| 200 | -0.176 | [-0.434, +0.082] | 0.152 | 3/8 | no |
+| 500 | -0.151 | [-0.416, +0.114] | 0.221 | 3/8 | no |
+| 2000 | +0.109 | [+0.048, +0.170] | 0.004 | 7/8 | yes |
+| all | +0.134 | [+0.059, +0.209] | 0.004 | 7/8 | yes |
+
+**What the curve shows.**
+
+1. **The unfloored standardiser diverges, it does not degrade.** −0.217 at N=25, still
+   negative at N=100. That is not "MPA is weak in the scarce regime" — it is a numerical
+   failure caused by dividing by the scale of a channel that happened to be quiet during
+   calibration. A previous version of this document reported a "+0.65 margin over MPA"
+   built almost entirely on this. The floor is a one-line fix and it belongs in the
+   baseline, not in the contribution.
+
+2. **Even a correctly-floored standardiser is worse than not adapting, below ~200 windows.**
+   `mpa − no-adapt` is **−0.382 (p=0.006, 0/8 sessions)** at N=25 and still −0.286 at
+   N=100. This is the finding that survives, and it is stronger than the one it replaced:
+   per-session standardisation is not merely unhelpful when calibration data is scarce, it
+   is *actively harmful*, and the floor does not fix that — it only stops the divergence.
+
+3. **Shrinkage is what makes adaptation safe at small N — by a small margin over doing
+   nothing.** `cadence − no-adapt` is **+0.029 (p=0.001, 8/8 sessions)** at N=25, rising to
+   +0.056 at N=100. Consistent across every session and every seed, and small. Quote it as
+   +0.03–0.06 R², never as the margin over a diverging baseline.
+
+4. **At true full calibration the two converge exactly.** With every training window in the
+   session (~17,800 on average), CADENCE 0.544 vs MPA 0.543 — **+0.001, p=0.183**. The
+   shrinkage weight is `w = n/(n+τ) ≈ 0.99` there, so CADENCE *is* MPA at that budget. The
+   old claim "ties MPA at full calibration" turns out to be true; it had simply never been
+   tested at full calibration, only at N=2000 (13% of the session).
+
+5. **The N=500 dip is real and explained.** CADENCE falls to 0.396, slightly *below*
+   no-adapt. §I.3 shows why: at that budget τ=200 shrinks too little. This is a limitation of
+   a single fixed τ, not noise.
+
+**So the honest summary of this experiment:** below ~200 calibration windows, adapting with
+a per-session standardiser is worse than not adapting; shrinking the estimate toward the
+source prior makes adaptation safe and buys a small consistent gain; above ~2000 windows
+the shrinkage is inert and the two methods are the same estimator. `tent` is a distant
+third throughout and `free-lora` never works.
+
+## I.3. Is τ tuned on the evaluation sessions?
+
+`shrink_tau = 200` was a default, and it sits in the middle of the budget grid it is
+reported on — the exact shape of a hyperparameter fitted to the test set. `run_tau_sweep.py`
+answers it two ways: sweep one-at-a-time around the defaults, and select τ by
+**leave-one-session-out** (for each held-out session take the τ that was best on the other
+seven, then score it on the held-out one).
+
+| N | τ=50 | τ=100 | τ=200 | τ=400 | τ=800 | LOSO-selected | LOSO − default | p |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 25 | +0.438 | +0.447 | +0.437 | +0.426 | +0.419 | +0.437 | −0.0006 | 0.971 |
+| 100 | +0.370 | +0.437 | **+0.464** | +0.459 | +0.443 | +0.464 | +0.0000 | 1.000 |
+| 500 | +0.300 | +0.338 | +0.396 | +0.450 | **+0.474** | +0.474 | +0.0784 | 0.134 |
+| 2000 | +0.519 | +0.519 | +0.515 | +0.516 | +0.517 | +0.514 | −0.0010 | 0.776 |
+
+**LOSO selection never significantly beats the fixed default** (largest gap +0.078,
+p = 0.134), so the reported numbers do not depend on having picked τ = 200 with hindsight.
+
+**But the surface is not flat, and it explains a real wrinkle.** At N = 500 the best τ is
+800, not 200 — and N = 500 is exactly the budget where CADENCE dips (§I.2). The dip is not
+noise: at that budget τ = 200 shrinks too little, trusting a per-session estimate that is
+still noisy. LOSO picks τ = 800 there and recovers most of it. An honest reading is that a
+*single* τ is a compromise across budgets, and a schedule (τ growing with the array's
+sparsity, or selected online) is the obvious improvement we did not make.
+
+The **`std_floor` sweep is flat to three decimals** across 0.02–0.4 at every budget. That is
+not a null result, it is a structural fact: the shrunk scale `w·s_t + (1−w)·1` is already
+bounded below by `1−w`, so the floor almost never binds *inside CADENCE*. The floor matters
+for the **unshrunk** standardiser, which has no such protection — which is precisely §I.2's
+finding, arrived at from the other direction.
+
+`results/tau_sweep.json`, `results/tau_sweep.png`.
+
+## I.4. The continual stream
+
+Freeze the source decoder; replay the 8 remaining sessions in temporal order with 2
+revisits; every method adapts label-free at each visit and is scored before the next.
+
+Two things changed here after the review, and both changed conclusions.
+
+**Stability is now measured as regret, not floor-crossings.** The previous version reported
+a collapse-rate: the fraction of visits below R² = 0.2. That metric assigned **the identical
+value (0.10) to No-Adapt, MPA, CoTTA, RDumb and CADENCE** across all three seeds — one
+genuinely hard session in ten visits, hard for everyone. A metric that cannot distinguish
+the method from doing nothing is not evidence, and the auto-verdict that consumed it
+("PARETO WIN", conditioned on `cadence_collapse <= noadapt_collapse`) was satisfiable by any
+method that changed nothing. **Regret** is measured against the per-session No-Adapt
+trajectory: how often adapting *lost* accuracy, and by how much.
+
+**The recalibration ceiling is now a fine-tune.** The previous ceiling trained a fresh
+decoder per session from scratch, scored 0.124, and was used to claim that cheap adaptation
+"beats per-session retraining." Nobody recalibrates a BCI that way. `finetune` continues the
+frozen source decoder on the session at a lower learning rate — what a deployment actually
+does — and `scratch` is kept as a secondary row.
+
+| method | kind | cumulative R² | worst | regret rate / mean | collapse | BWT |
+| --- | --- | --- | --- | --- | --- | --- |
+| scratch | recalibration ceiling | +0.757 | +0.718 | 0.00 / 0.000 | 0.00 | +0.000 |
+| finetune | recalibration ceiling | +0.741 | +0.662 | 0.00 / 0.000 | 0.00 | +0.000 |
+| mpa | label-free adapter | +0.575 | -0.093 | 0.10 / 0.062 | 0.10 | +0.000 |
+| cadence | label-free adapter | +0.540 | -0.031 | 0.00 / 0.000 | 0.10 | +0.000 |
+| rdumb | label-free adapter | +0.505 | -0.056 | 0.13 / 0.036 | 0.10 | -0.031 |
+| cotta | label-free adapter | +0.486 | -0.003 | 0.10 / 0.016 | 0.10 | -0.003 |
+| no-adapt | frozen (reference) | +0.408 | -0.031 | 0.00 / 0.000 | 0.10 | +0.000 |
+| tent | label-free adapter | +0.401 | -0.029 | 0.50 / 0.137 | 0.17 | -0.098 |
+| free-lora | unstructured adapter | -0.155 | -0.684 | 0.97 / 0.587 | 1.00 | +0.031 |
+| nomad | unstructured adapter | -0.453 | -1.179 | 1.00 / 0.862 | 1.00 | +0.037 |
+
+| CADENCE vs | Δ cumulative R² | 95% CI | p | visits won |
+| --- | --- | --- | --- | --- |
+| nomad | +0.993 | [+0.750, +1.236] | 0.000 | 10/10 |
+| free-lora | +0.695 | [+0.494, +0.897] | 0.000 | 10/10 |
+| tent | +0.139 | [+0.022, +0.256] | 0.025 | 8/10 |
+| no-adapt | +0.132 | [+0.059, +0.204] | 0.003 | 8/10 |
+| cotta | +0.054 | [+0.006, +0.103] | 0.032 | 7/10 |
+| rdumb | +0.035 | [-0.028, +0.098] | 0.238 | 6/10 |
+| mpa | -0.035 | [-0.099, +0.029] | 0.252 | 4/10 |
+
+**Recalibration wins, and it is not close.** Given the session's own input normalisation, a
+per-session decoder reaches **0.757** (from scratch) or **0.741** (fine-tuned from the frozen
+source) against the best label-free adapter's 0.575. It also never falls below the collapse
+floor and never loses to No-Adapt on any visit. **What label-free adaptation buys is
+cheapness, not accuracy** — 2·n_chan adapted parameters, no labels, no gradient step at
+deployment — and that is the honest framing of every adapter in this table.
+
+This corrects a claim the previous version of this document made. That version reported a
+ceiling of 0.124 and concluded that "frozen + cheap adaptation beats per-session
+retraining." Two things were wrong with it: the ceiling trained from scratch rather than
+fine-tuning (the smaller error), and it was fed inputs z-scored with the **source** session's
+statistics rather than the session's own — the exact handicap the alignment baselines exist
+to remove. Isolating that on three sessions, identical data and schedule:
+
+| | frozen | fine-tune, source-normalised | fine-tune, own-normalised | scratch, own-normalised |
+| --- | --- | --- | --- | --- |
+| velocity R² | 0.511 | **0.024** | **0.741** | **0.764** |
+
+**Among the label-free methods, MPA leads — not CADENCE.** 0.575 vs 0.540. The difference is
+not significant (−0.035, p = 0.252, 4/10 visits), so the fair statement is that they are
+indistinguishable here with MPA ahead on the point estimate. This is exactly what §I.2
+predicts: the stream's adaptation budget is 1500 windows, well past the point where
+shrinkage stops helping and starts costing.
+
+**CADENCE's real property on this stream is that it never hurts.** It is the only adapter
+with **regret 0.00 / 0.000** — across 3 seeds and 10 visits it did not lose to the frozen
+decoder once. MPA loses on 10% of visits (mean shortfall 0.062), Tent on 50% (0.137). If the
+deployment question is "can I turn this on without risking a session," CADENCE and No-Adapt
+are the only two answers in the table, and CADENCE is +0.132 better than No-Adapt
+(p = 0.003, 8/10 visits).
+
+**Collapse-rate is degenerate here and regret is not.** Note the collapse column: 0.10 for
+No-Adapt, MPA, CoTTA, RDumb *and* CADENCE — identically, across all three seeds. One hard
+session in ten visits, hard for everyone. That metric cannot distinguish the method from
+doing nothing, which is why the previous version's "Pareto win" was vacuous. Regret
+separates the same methods cleanly.
+
+**The structure ablation, unconfounded.** Tent (gradient-fit, per-channel **diagonal**) vs
+free-LoRA (gradient-fit, dense **rank-1**) — same objective, same optimiser, same lr, same
+steps, same 2·n_chan parameters, differing only in the head's structure:
+
+> **tent − free-lora = +0.556 [+0.337, +0.776], p < 0.001, 10/10 visits.**
+
+Interpretable structure, not parameter count, is what makes label-free adaptation survivable.
+The previous version claimed this from CADENCE vs free-LoRA, which confounds structure with
+optimiser (CADENCE's head is closed-form, free-LoRA's is gradient-fit) — the comparison above
+is the one that isolates it.
+
+**Unstructured adaptation collapses outright.** NoMAD (full-rank readin, −0.453) and
+free-LoRA (dense rank-1, −0.155) go negative with regret ≈ 1.00 — they lose to the frozen
+decoder on essentially every visit. Given expressive free parameters, the label-free
+objective finds moment-matching solutions that destroy decoding.
+
+**Forgetting.** Tent carries state forward and accumulates error (BWT −0.098, dropping to
+No-Adapt's level by the end). CADENCE and MPA both score BWT = 0.000 — but that is a
+*property, not an achievement*: both refit from scratch each session and are memoryless by
+construction. Reporting it as a CADENCE advantage over Tent is fair; reporting it as a
+CADENCE advantage over MPA would not be.
+
+---
+
+# Part II — what we ruled out to get here
+
+Four falsifications, in the order they happened. They are kept in full because the
+*mechanism* of each failure is what produced Part I: once you understand why a decoder does
+not need to be told its conduction delays, the only remaining question is whether conduction
+explains any of the cross-session gap — which is the measurement Part I makes.
+
+The chain, in one line each:
+
+1. **CV as a temporal-window prior** helps on synthetic data with a planted CV→window law
+   (§II.1), and **hurts** on real continuous decoding (§II.2) — recency-masking discards history
+   the decoder was using.
+2. **CV via an EEG mu-frequency proxy** gives no benefit even after the masking confound was
+   removed (§II.3) — the proxy is uninformative, as the weak literature link predicts.
+3. **CV as delay-alignment** rather than window-shrinking fails within-subject too (§II.6): a
+   *fixed structural* delay is learnable from data, so being told it adds little.
+4. **CV as a cross-subject conduction normaliser** works where the conduction difference is
+   injected and known (§II.7, §II.8.1) and is **null on every real cross-session gap** (§II.8.2,
+   §II.8.3). That pair of results is the instrument and its calibration — §I.1.
+
+## II.1. Gate ablation — "is CV information, or just a better prior?"
 
 `python scripts/run_ablation.py` — four gate modes (`cv` / `learned` / `fixed` /
 `none`) as test MSE (lower is better), averaged over subjects.
@@ -71,7 +375,7 @@ tight CIs. `results/sensitivity.json`.
 
 ---
 
-## 2. Intracortical benchmark — the decisive REGRESSION test
+## II.2. Intracortical benchmark — the decisive REGRESSION test
 
 `python scripts/run_intracortical_benchmark.py --seeds 3` — NLB **MC_Maze_Small**
 (monkey maze reach; 142 units, 20 ms bins), decode 2-D hand velocity from a 400 ms
@@ -112,7 +416,7 @@ here is B2SS vs the same-input baselines.)
 
 Figure: `results/intracortical_benchmark.png`.
 
-## 3. Real-EEG benchmark — "can scalp EEG carry this / does the architecture work?"
+## II.3. Real-EEG benchmark — "can scalp EEG carry this / does the architecture work?"
 
 `python scripts/run_real_benchmark.py --seeds 3` — PhysioNet motor EEG (left vs
 right fist, 64 ch, 160 Hz), within-subject 3-fold CV, cropped-window training +
@@ -147,14 +451,14 @@ Paired vs b2ss-cv (per-subject, seed-averaged): learned Δ−0.010 (p=.69), none
 
 **What this settles.** The strong "EEG can't carry it" threat is removed (the task
 is decodable). But the CV gate does not help real EEG decoding, and the fix to F1
-confirms this is the *proxy*, not a masking artifact. Together with §2, the picture
+confirms this is the *proxy*, not a masking artifact. Together with §II.2, the picture
 is consistent: the CV mechanism helps only where a CV→window structure genuinely
 exists (synthetic), and neither real dataset — lacking a *measured* CV — shows a
 benefit.
 
 ---
 
-## 4. Real-time latency — the proposal's <50 ms budget (§4.7)
+## II.4. Real-time latency — the proposal's <50 ms budget (§4.7)
 
 `python scripts/bench_latency.py` — single-window (batch=1) inference, CPU, 1 thread.
 
@@ -168,7 +472,7 @@ RTX 4080, which is faster still. **The <50 ms claim holds with wide margin.**
 
 ---
 
-## 5. Statistical harness — corrected effect sizes (proposal §6)
+## II.5. Statistical harness — corrected effect sizes (proposal §6)
 
 `python -m b2ss.stats`. Required N for 80% power in a paired design, using the
 **verified** effect sizes (Clark 2022 is r=0.18 ≈ d 0.37, not d 0.45):
@@ -183,14 +487,14 @@ RTX 4080, which is faster still. **The <50 ms claim holds with wide margin.**
 underpowered (0.50 power)** for H4 — it needs ~60–80 subjects. The harness also
 provides ICC(2,1) for H1 test-retest (verified against `AnovaRM`), the H3 mixed
 model with marginal ΔR² + likelihood-ratio test, and Bonferroni/Benjamini-Hochberg
-correction — so the pre-registered §6 plan is runnable, not just described.
+correction — so the pre-registered proposal §6 plan is runnable, not just described.
 
 ---
 
-## 6. Phase 8 — CV as delay-alignment (mechanism redesign)
+## II.6. Phase 8 — CV as delay-alignment (mechanism redesign)
 
 The gate *removes* information (window-shrinking), which is why it hurt real
-continuous decoding (§2). Phase 8 rebuilds the mechanism as delay-**alignment** —
+continuous decoding (§II.2). Phase 8 rebuilds the mechanism as delay-**alignment** —
 use each channel's conduction delay to time-align its input, full window preserved
 (`ChannelDelay`, `align_mode='cv'`) — and tests it on **real MC_Maze spikes with a
 known injected per-group latency** (`run_latency_bridge.py`), across training-set
@@ -217,7 +521,7 @@ sizes, on both B2SS and a GRU. Velocity R², 5 seeds:
 
 **Verdict:** the redesign does **not** rescue the idea. Measured CV yields at most a
 small, not-clearly-significant prior benefit on a weaker decoder at low/moderate
-data, and nothing for a strong decoder. This *explains* the §2/§3 negatives: because
+data, and nothing for a strong decoder. This *explains* the §II.2/§II.3 negatives: because
 CV is a fixed structural parameter, a within-subject decoder learns the conduction
 delays from data, so being told them adds little. The one regime not excluded is
 **cross-subject / zero-shot transfer** (a decoder that never saw the target
@@ -225,10 +529,10 @@ subject's data, given that subject's measured CV) — the recommended next test.
 
 Figure: `results/latency_bridge.png`.
 
-## 7. Phase 9 — cross-subject / zero-shot transfer (the one positive regime)
+## II.7. Phase 9 — cross-subject / zero-shot transfer (the one positive regime)
 
 Within-subject, a decoder learns the conduction delays from data, so measured CV
-adds nothing (§2, §3, §6). The one regime where it *can't* learn them: **zero-shot
+adds nothing (§II.2, §II.3, §II.6). The one regime where it *can't* learn them: **zero-shot
 transfer to a held-out subject** (the decoder never sees the target's training data).
 Test (`run_transfer.py`): 5 disjoint pseudo-subjects from real MC_Maze, each given a
 distinct **injected** per-group conduction delay; leave-one-subject-out zero-shot
@@ -266,7 +570,7 @@ target into a common conduction frame) transfers better.
 value is as a **cross-subject conduction normaliser for zero-shot transfer**. Figure:
 `results/transfer.png`.
 
-## 8. Phase 10 — the pivot: conduction normalization for transfer
+## II.8. Phase 10 — the pivot: conduction normalization for transfer
 
 The project pivoted (see [PIVOT.md](PIVOT.md)) from "CV-modulated decoder" to a
 **conduction normaliser** that cuts BCI recalibration. Train a decoder once on a
@@ -328,7 +632,7 @@ over no-norm = **−0.015**), and full-retrain dominates (0.759). Unlike the con
 turnover, firing-rate drift, and tuning changes** — even with corresponding electrodes,
 the recorded neurons differ across days. So conduction timing is *not* the axis of the
 real gap, and a conduction normaliser alone cannot close it. This is the honest scope
-boundary, and it is *why* the mechanism only helps where conduction dominates (§8.1).
+boundary, and it is *why* the mechanism only helps where conduction dominates (§II.8.1).
 
 ### 8.3 EEG breadth — bounds the claim (`run_moabb_transfer.py`, Zhou2016)
 
@@ -347,158 +651,65 @@ is not conduction timing. This **bounds the claim to intracortical / conduction-
 settings**. (Absolute accuracy is modest — a small transformer on ~200 trials — but the
 claim is the *marginal* δ-fit effect, which is null across all folds and seeds.)
 
-## 9. Phase 11 — CADENCE: collapse-resistant structured test-time adaptation
+---
 
-The pivot's headline (design: [PIVOT.md] successor spec; plan: [ROADMAP.md] Phase 11).
-Freeze a decoder trained on a source pool; adapt only a tiny **structured** module online
-across a *stream* of recording sessions. Arena: the **monkey-Indy self-paced grid-reach
-set** (O'Doherty/Makin/Sabes, Zenodo 583331) — **11 real sessions** over ~1 month, 96
-electrodes, 20 ms bins, 2-D cursor velocity. Freeze a GRU on the 3 earliest sessions; adapt
-online and **label-free** across the remaining 8 in temporal order + 2 revisits. Metrics:
-cumulative / worst-session velocity R², collapse-rate (fraction of visits with R² < 0.2),
-backward-transfer (BWT; negative = forgetting).
+# Honesty ledger
 
-### 9.1 Online data-efficiency — CADENCE beats every competitor (`run_indy_calibration.py`, 3 seeds)
+Everything a reviewer would otherwise have to find in the JSON themselves.
 
-The realistic online-BCI regime: at each new session you must decode from the FIRST few
-windows, before much calibration data has arrived. Every method adapts UNSUPERVISED from
-the first N windows of the held-out session. Cross-session velocity R² vs N, 8 targets × 3 seeds:
+**On the original hypothesis (Part II)**
 
-| N windows | no-adapt | MPA | Tent | free-LoRA | **CADENCE** |
-| --- | --- | --- | --- | --- | --- |
-| **25** | 0.409 | **−0.217** | 0.306 | −0.579 | **0.437** |
-| **50** | 0.409 | −0.074 | 0.300 | −0.267 | **0.455** |
-| 100 | 0.409 | −0.004 | 0.317 | −0.482 | **0.464** |
-| 200 | 0.409 | 0.149 | 0.374 | −0.477 | **0.455** |
-| 500 | 0.409 | 0.250 | 0.377 | −0.688 | 0.396 |
-| 2000 | 0.409 | 0.510 | 0.489 | −0.314 | **0.515** |
+- The synthetic ablation proves a *mechanism* — a CV-derived integration window helps when a
+  CV→window structure exists — on data where we planted that structure. It is not evidence
+  the structure exists in brains.
+- On **both** real datasets the CV gate gives no benefit: on EEG the mu-frequency proxy is
+  uninformative (confirmed after the F1 masking confound was removed, so it is the proxy and
+  not an artifact); on intracortical continuous decoding the gate actively *hurts*, because
+  recency-masking discards history the decoder was using.
+- B2SS is a real decoder (it beats linear Ridge) but is not competitive with a plain GRU
+  (intracortical) or with EEGNet/CSP (EEG). The GRU is the backbone everywhere downstream.
+- Reframing CV as delay-*alignment* also fails within-subject: a fixed structural delay is
+  learnable from data, so being told it adds at most a small, not-clearly-significant
+  low-data prior.
+- The corrected power analysis concerns the *proposal's* design, not a result here.
 
-**CADENCE beats MPA at every budget (margin +0.005 → +0.65) and every other competitor at
-every small budget.** The mechanism is the point: MPA — and every per-session method —
-estimates per-channel mean/std cold from the current session's windows; with few windows
-those estimates are noisy, and dividing by a noisy per-channel std explodes the array's many
-low-rate channels, so **MPA goes negative at N ≤ 100**. CADENCE's **consolidation shrinkage**
-(shrink each estimate toward the source prior with weight n/(n+τ), empirical-Bayes style)
-stays robust: **~0.45 R² from just 25 windows (≈ 0.5 s of calibration)** — a flat, high curve
-where MPA rises slowly from below zero. At full calibration (N = 2000) CADENCE ties MPA
-(0.515 vs 0.510): the win is specific to the **data-scarce regime**, which is exactly the one
-that matters for online continual BCI. free-LoRA (dense, channel-mixing) collapses at every N;
-Tent (gradient per-channel) trails throughout.
+**On the decomposition (§I.1)**
 
-This is a novel, biophysically-sensible, channel-preserving mechanism — empirical-Bayes
-shrinkage of per-channel calibration statistics toward a source prior on a continual neural
-stream — that beats the strong standardisation baseline exactly where per-session estimation
-is data-starved, an axis MPA structurally cannot touch. Figure: `results/indy_calibration.png`.
+- The positive control is an oracle **twice over**: the conduction difference is injected and
+  known, *and* the aligner is handed the same `arange(C) % 8` channel→group map used to
+  generate it. It establishes the instrument's ceiling. It is not a result.
+- The nulls are within-subject-across-days and cross-session EEG. "Timing does not explain
+  the drift between two days of the same monkey" is **not** the same claim as "conduction
+  velocity is useless as a decoder prior." Only a cohort with measured per-subject CV
+  separates them, and BACKGROUND §9 documents that no public dataset provides one.
 
-### 9.2 The continual stream — collapse-resistance (`run_indy_stream.py`, 3 seeds)
+**On CADENCE (§I.2–§I.4)**
 
-Velocity R², mean [95% CI] over 3 seeds. `n_adapt` = adapted parameters (frozen backbone
-≈ 180 k). Structured = per-channel/diagonal; unstructured = dense/full-rank.
+- The estimator is textbook empirical Bayes. Shrinking normalization statistics toward
+  source statistics is prior art in TTA. See BACKGROUND §10 — the novelty claim is narrow
+  and deliberately so.
+- The gain over **not adapting** is +0.029 to +0.056 R² at N ≤ 100 — small, consistent
+  (7–8/8 sessions), and the number to quote. The large margins in earlier drafts were
+  measured against a baseline that was diverging for want of a one-line scale floor.
+- CADENCE **does not lead the continual stream**. See §I.4.
+- At full calibration the shrinkage is inert (`w ≈ 0.99`) and CADENCE *is* MPA.
+- A single fixed τ is a compromise: at N=500 it under-shrinks and CADENCE drops below
+  no-adapt. A τ schedule is the obvious fix we did not build.
+- `BWT = 0.000` is a property, not an achievement — the adapter is memoryless by
+  construction, and MPA scores the same for the same reason.
 
-| method | kind | cumulative R² | worst-session R² | collapse-rate | BWT |
-| --- | --- | --- | --- | --- | --- |
-| MPA-style | structured (closed-form) | 0.563 [0.55, 0.58] | −0.100 | 0.10 | 0.000 |
-| RDumb | structured (reset Tent) | 0.505 [0.48, 0.53] | −0.056 | 0.10 | −0.031 |
-| **CADENCE** | structured (shrinkage standardise) | **0.540 [0.52, 0.56]** | −0.031 | **0.10** | 0.000 |
-| CoTTA | structured (teacher affine) | 0.486 [0.47, 0.50] | −0.003 | 0.10 | −0.003 |
-| No-Adapt | — (frozen) | 0.408 [0.36, 0.46] | −0.031 | 0.10 | 0.000 |
-| Tent | structured (carried affine) | 0.401 [0.29, 0.51] | −0.029 | 0.167 | **−0.098** |
-| **free-LoRA** | **unstructured (dense rank-1)** | **−0.175 [−0.49, 0.14]** | −0.841 | **1.000** | +0.116 |
-| **NoMAD-style** | **unstructured (full-rank readin)** | **−0.453 [−0.58, −0.33]** | −1.179 | **1.000** | +0.037 |
-| full-retrain | per-session, full labels | 0.124 [0.10, 0.15] | −0.002 | 0.875 | — |
+**On what beats it**
 
-**What the 3-seed data shows:**
+- **Per-session recalibration wins outright**, once given the session's own input
+  normalisation. An earlier version of this harness fed the ceiling source-normalised
+  inputs, scored it at ~0.13, and used that to claim cheap adaptation beats retraining.
+  Measured properly the ceiling is ~0.75. Label-free adaptation buys **cheapness, not
+  accuracy** — 2·n_chan adapted parameters and no labels, at a real accuracy cost.
 
-1. **Unstructured adaptation catastrophically collapses.** NoMAD (full-rank readin,
-   −0.453, CI entirely below 0) and free-LoRA (dense rank-1, −0.175) drive cumulative R²
-   negative with collapse-rate = 1.00 — every session falls below the floor. Given expressive
-   free parameters, the label-free objective finds moment-matching solutions that destroy the
-   decoding. The structured methods never do (collapse-rate 0.10 — one hard session, shared by
-   No-Adapt).
-2. **The matched-parameter ablation fires — structure, not count.** free-LoRA (dense rank-1)
-   and CADENCE's fast head carry the **same** parameter count (2·n_chan); only the structure
-   differs (dense channel-mix vs per-channel diagonal). free-LoRA collapses, CADENCE holds at
-   0.540. The interpretable structure — not the parameter budget — confers the
-   collapse-resistance. This was the pre-registered make-or-break test.
-3. **Frozen + cheap adaptation beats per-session retraining.** Full per-session recalibration
-   from scratch reaches only **0.124** — the Indy sessions are strongly non-stationary *within*
-   themselves (chronological split: train on the early part, deploy on the late part), so a
-   from-scratch decoder on one session's data is both costly and *worse* than the frozen source
-   decoder (trained across 3 full sessions) with a tiny structured adapter (CADENCE 0.540). The
-   robustness of the shared frozen backbone is exactly what per-session retraining throws away.
-   _(Honest caveat: this reflects limited/non-stationary per-session data, not that retraining is
-   inherently weak — a random-split within-session decoder scores far higher; the point is the
-   deployment-realistic chronological regime.)_
-4. **CADENCE vs carried-forward Tent — no error accumulation.** Tent (0.401, BWT **−0.098**)
-   *accumulates error* over the stream, dropping to No-Adapt's level; CADENCE (0.540, BWT
-   0.000) refreshes its estimate per session against the source prior and does not forget.
+**On scope**
 
-Figure: `results/indy_stream_pareto.png` (the accuracy × collapse-rate plane — structured
-methods top-left, unstructured bottom-right).
-
-### 9.3 Honest scope (conceded up front, not buried)
-
-- **The win is regime-specific.** CADENCE beats MPA decisively when calibration data is
-  scarce (§9.1), but **ties MPA at full calibration** (N = 2000: 0.515 vs 0.510) — the
-  consolidation shrinkage degrades to a plain standardiser once per-session estimates are
-  well-conditioned. We report the full curve, not just the favourable end. The regime that
-  matters for online continual BCI is the scarce one, so this is a real win, not a cherry-pick.
-- **On Indy there is no measured CV, so CADENCE's conduction anchor is dormant** — CADENCE's
-  cross-session accuracy comes from the per-channel consolidation shrinkage, not the conduction
-  term, which adds ~0 accuracy on this representation-drift gap. The conduction term's value is
-  the drift diagnostic (§9.4) and, where a measured CV exists, a safe timing prior.
-- The contributions are: **the consolidation-shrinkage adapter that dominates the online
-  data-efficiency curve** (§9.1); **collapse-resistance** of structured vs matched-param
-  unstructured adaptation with the structure ablation (§9.2); the first **continual-stream iBCI
-  protocol** (collapse-rate / worst-session / BWT); and the **conduction decomposition** (§9.4).
-
-### 9.4 Drift decomposition (`run_decomposition_figure.py`)
-
-Conduction/timing marginal (Δ velocity R² over no-norm), same units:
-
-| setting | conduction marginal |
-| --- | --- |
-| timing-dominated (injected MC_Maze) | **+0.250 [+0.191, +0.309]** (CI-separated) |
-| representation-dominated (real MC_Maze S/M/L) | **−0.015 [−0.027, −0.004]** (null) |
-| EEG (Zhou2016, accuracy units) | δ-fit **−0.003** (null) |
-
-Conduction normalization helps **only where timing dominates**; the real multi-session gap is
-representation drift — which the structured *representation* adapter (not the conduction term)
-is what addresses. Figure: `results/decomposition.png`.
-
-## Honesty ledger
-
-- The synthetic ablation proves the *mechanism* (a CV-derived window helps when a
-  CV→window structure exists); it is not evidence the structure exists in brains.
-- On **both** real datasets the CV gate gives **no benefit**: on EEG the mu-proxy is
-  uninformative (confirmed after the F1 fix, so not a masking artifact); on
-  intracortical continuous decoding the gate actively *hurts* (recency-masking drops
-  useful history). The mechanism's usefulness is contingent on data having the
-  CV→window structure it assumes — which no real recording here provides (none has a
-  *measured* CV).
-- B2SS is a real decoder (beats linear Ridge) but is not competitive with a GRU
-  (intracortical) or with EEGNet/CSP (EEG) on these tasks.
-- **Phase 8**: reframing CV as delay-*alignment* also fails within-subject — a *fixed
-  structural* delay is learnable from data, so measured CV adds at most a small,
-  not-clearly-significant low-data prior.
-- **Phase 9 (the positive)**: in *zero-shot cross-subject transfer* — where the decoder
-  cannot learn the target's delays — measured-CV alignment **does** help (B2SS +0.076,
-  GRU +0.035 R², consistent across seeds). CV's real value is **cross-subject
-  conduction normalisation, not within-subject information**. Caveat: the conduction
-  difference is injected/known (proof-of-mechanism, upper bound); a strong GRU without
-  alignment still beats aligned-B2SS; needs a real measured-CV cohort to confirm.
-- The corrected power analysis is about the *proposal's* design, not a new result.
-- **Phase 11 (CADENCE — the current headline)**: on a real 11-session monkey-Indy stream,
-  CADENCE's **consolidation shrinkage** (shrink each per-channel calibration estimate toward the
-  source prior by n/(n+τ)) **beats every competitor in the data-scarce online regime** — at 25
-  calibration windows CADENCE +0.44 R² vs MPA −0.22, Tent +0.31, free-LoRA −0.58 (3 seeds; §9.1) —
-  because per-session standardisers have noisy per-channel stats from few windows and go negative,
-  while the shrunk estimate stays robust. Conceded: CADENCE **ties MPA at full calibration**
-  (0.515 vs 0.510) — the win is scoped to the scarce regime (the one that matters online).
-  Separately, matched-parameter **unstructured** adaptation (dense free-LoRA; full-rank NoMAD-style)
-  **catastrophically collapses** (R² < 0, collapse-rate ≈ 1.00) while structured per-channel
-  adaptation does not — the structure ablation (§9.2). Without a measured CV the conduction anchor
-  is dormant (~0 accuracy on this representation-drift gap); conduction's value is confined to
-  timing-dominated settings (decomposition: +0.250 injected vs −0.015 real).
-- None of this substitutes for the wet-lab study (MRI g-ratio, TMS-EEG, sEEG,
-  closed-loop prosthetic control) — the only setting with a measured CV to test.
+- **One subject.** Every stream number is monkey Indy, one 96-electrode array, 11 sessions
+  over ~1 month. `--subject loco` is wired through and unrun (~12 GB).
+- Small N elsewhere: EEG 8 subjects, 2–3 seeds; single MC_Maze sessions in the brackets.
+- None of this substitutes for the wet-lab study (MRI g-ratio, TMS-EEG, sEEG, closed-loop
+  control) — the only setting with a measured CV to test.

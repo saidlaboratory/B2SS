@@ -295,6 +295,39 @@ OpenNeuro SPDX licenses default to CC0 but should be confirmed per version page.
 
 ---
 
+## 10. Where the shrinkage adapter sits — and why the novelty claim is narrow
+
+CADENCE's surviving mechanism is one line: shrink each per-channel calibration estimate
+toward the source prior with weight `w = n/(n+τ)`. That is **not a new statistical idea**,
+and a paper that presents it as one deserves to be rejected. The honest positioning:
+
+- **Empirical Bayes / James–Stein.** Shrinking a noisy per-unit estimate toward a pooled
+  prior in proportion to the evidence behind it is the standard construction (James &
+  Stein 1961; Efron & Morris 1975). `n/(n+τ)` is the conjugate-normal posterior weight
+  with τ the prior's effective sample size. We use it off the shelf.
+- **Normalization-statistic adaptation in TTA.** Adapting a frozen network by recomputing
+  normalization statistics on the target is the AdaBN/PTBN family (Li et al. 2017; Nado
+  et al. 2020), and **interpolating those statistics between source and target** rather
+  than replacing them is already known to help under small test batches — e.g. the α-blend
+  in Schneider et al. (*NeurIPS* 2020, "Improving robustness against common corruptions by
+  covariate shift adaptation"), and the prior-corrected variants that followed. Our `w`
+  differs only in being set by n rather than tuned as a constant.
+- **Euclidean/Riemannian alignment in BCI.** Per-session re-centering of the input
+  distribution is the standard transfer trick in EEG BCI (He & Wu 2020; Zanini et al.
+  2018), and MPA-style per-channel moment alignment is its intracortical analogue.
+
+**So what is left that is ours?** Not the estimator. The contributions are (a) the
+*measurement* — a calibrated decomposition, with a positive control, showing that the real
+multi-session intracortical gap is not conduction timing; (b) the *observation* that on a
+sparse 96-electrode array the standard per-session standardiser does not merely degrade
+below ~200 calibration windows but **diverges**, and that the fix is a scale floor plus
+evidence-weighted shrinkage; and (c) the continual-stream iBCI protocol with a stability
+metric (regret vs No-Adapt) that actually separates methods. A reviewer who says "this is
+just empirical Bayes" is right about the estimator and wrong about the claim — but only if
+the paper says so first.
+
+---
+
 ## Citation accuracy notes
 
 Corrections to the **proposal text/reference list** (the underlying science holds;
