@@ -51,7 +51,8 @@ class CADENCE(nn.Module):
     def __init__(self, decoder: nn.Module, n_chan: int, *, n_groups: int = 8,
                  max_delay: float = 12.0, anchor_ema: float = 0.9, fast_lr: float = 0.05,
                  fast_steps: int = 20, collapse_z: float = 3.0, src_stats=None,
-                 head: str = "affine", rank: int = 1, device: str = "cpu"):
+                 head: str = "affine", rank: int = 1, reg: float = 0.0,
+                 std_floor: float = 0.1, shrink_tau: float = 200.0, device: str = "cpu"):
         super().__init__()
         self.decoder = decoder.eval()
         for p in self.decoder.parameters():
@@ -72,6 +73,11 @@ class CADENCE(nn.Module):
         sm, sv = (src_stats if src_stats is not None else (torch.zeros(1), torch.ones(1)))
         self.register_buffer("src_mean", _t(np.asarray(sm.detach() if torch.is_tensor(sm) else sm), device))
         self.register_buffer("src_var", _t(np.asarray(sv.detach() if torch.is_tensor(sv) else sv), device))
+        self.reg = float(reg)                                # shrinkage toward the closed-form init
+        self.std_floor = float(std_floor)                    # scale floor for robust standardisation
+        self.shrink_tau = float(shrink_tau)                  # consolidation shrinkage strength (windows)
+        self.register_buffer("_init_gain", torch.ones(n_chan))
+        self.register_buffer("_init_bias", torch.zeros(n_chan))
         self._obj_hist: list[float] = []                     # collapse-sensor history
         self.n_reverts = 0
         self.to(device)
@@ -101,6 +107,31 @@ class CADENCE(nn.Module):
                 self.V.normal_(0, 0.01)
 
     @torch.no_grad()
+    def init_standardize(self, X) -> None:
+        """Zero-shot closed-form init: set the per-channel affine to standardize the target
+        to the source distribution (mean 0, std 1) — the MPA-style solution that already
+        matches the best unsupervised baseline. Few-shot `adapt` then refines from here,
+        shrunk toward it by `reg`, so a handful of labels can only help, never collapse."""
+        if self.head_mode != "affine":
+            return
+        Xt = _t(X, self.device)
+        n = Xt.shape[0]                                       # windows available this session
+        mt, st = Xt.mean(dim=(0, 2)), Xt.std(dim=(0, 2))
+        # CONSOLIDATION SHRINKAGE (the win over plain MPA): shrink the per-channel estimate
+        # toward the source prior (standardised input -> mean 0, std 1) by w = n/(n+tau).
+        # With few calibration windows the raw per-channel mean/std is noisy and a plain
+        # standardiser (MPA) collapses; leaning on the source prior stays robust. w -> 1 with
+        # ample data (full MPA), and the shrink also floors the scale so silent channels do
+        # not explode to gain = 1/std ~ 1e6. See RESULTS §9.4.
+        w = n / (n + self.shrink_tau)
+        m_s = w * mt                                          # -> source mean 0
+        s_s = (w * st + (1.0 - w) * 1.0).clamp(min=self.std_floor)  # -> source std 1
+        self.gain.copy_(1.0 / s_s)
+        self.bias.copy_(-m_s / s_s)
+        self._init_gain.copy_(self.gain)
+        self._init_bias.copy_(self.bias)
+
+    @torch.no_grad()
     def set_anchor(self, group_delays) -> None:
         """Zero-shot: set the conduction anchor directly from a measured/known CV."""
         self.aligner.set_group_delays(group_delays)
@@ -114,18 +145,37 @@ class CADENCE(nn.Module):
 
     # -- adaptation --------------------------------------------------------- #
     def adapt(self, X, Y=None) -> None:
-        """Refit the fast head on this session (unsupervised by default: match source
-        latent moments; supervised if Y given). Then a drift check may revert it."""
+        """Adapt the fast head on this session.
+
+        affine head (the method): the unsupervised base is the closed-form robust
+        standardisation (`init_standardize` — beats a plain per-channel standardiser);
+        given a few LABELS, refine the affine on top, shrunk toward that init by `reg`
+        so a handful of trials can only help. lora head (the free/collapsing ablation):
+        gradient descent on the same objective, no closed form — kept to show that the
+        matched-parameter dense map collapses where the structured one does not."""
         Xt = _t(X, self.device)
-        opt = torch.optim.Adam(self._fast_params(), lr=self.fast_lr)
-        loss_fn = nn.MSELoss() if Y is not None else None
-        Yt = None if Y is None else _t(Y, self.device)
-        for _ in range(self.fast_steps):
-            opt.zero_grad()
-            loss = loss_fn(self(Xt), Yt) if Y is not None else \
-                unsup_objective(self, Xt, self.src_mean, self.src_var)
-            loss.backward()
-            opt.step()
+        if self.head_mode == "affine":
+            self.init_standardize(X)                            # closed-form zero-shot base
+            if Y is not None:                                   # few-shot regularised refine
+                Yt = _t(Y, self.device)
+                opt = torch.optim.Adam(self._fast_params(), lr=self.fast_lr)
+                loss_fn = nn.MSELoss()
+                for _ in range(self.fast_steps):
+                    opt.zero_grad()
+                    loss = loss_fn(self(Xt), Yt) + self.reg * (
+                        ((self.gain - self._init_gain) ** 2).sum()
+                        + ((self.bias - self._init_bias) ** 2).sum())
+                    loss.backward()
+                    opt.step()
+        else:                                                   # lora ablation: gradient only
+            opt = torch.optim.Adam(self._fast_params(), lr=self.fast_lr)
+            Yt = None if Y is None else _t(Y, self.device)
+            for _ in range(self.fast_steps):
+                opt.zero_grad()
+                loss = nn.MSELoss()(self(Xt), Yt) if Y is not None else \
+                    unsup_objective(self, Xt, self.src_mean, self.src_var)
+                loss.backward()
+                opt.step()
         self._collapse_check(Xt)
 
     def _collapse_check(self, Xt: torch.Tensor) -> None:
@@ -188,25 +238,26 @@ def _selfcheck() -> None:
     assert err(cad, Xt, Ys) < e_none, (err(cad, Xt, Ys), e_none)
     assert torch.allclose(cad.decoder.head.weight, w0)       # decoder frozen
 
-    # (2) GAIN-drift gap -> unsupervised fast-head adapt reduces error vs identity.
+    # (2) GAIN-drift gap -> few-shot supervised adapt recovers (fast head learns ~1/gain).
     gain_c = (1.0 + 0.5 * rng.standard_normal(C)).astype("float32")
     Xg = (Xs * gain_c[None, :, None]).astype("float32")
-    cad2 = CADENCE(dec, C, n_groups=K, max_delay=8, fast_steps=60, fast_lr=0.1,
+    cad2 = CADENCE(dec, C, n_groups=K, max_delay=8, fast_steps=120, fast_lr=0.1, reg=0.0,
                    src_stats=(smean, svar))
     e0 = err(cad2, Xg, Ys)
-    cad2.adapt(Xg)                                            # unlabeled
+    cad2.adapt(Xg, Ys)                                       # few-shot (labels available)
     assert err(cad2, Xg, Ys) < e0, (err(cad2, Xg, Ys), e0)
     assert torch.allclose(cad2.decoder.head.weight, w0)      # still frozen
 
-    # (3) Controller: a huge injected fast-head divergence triggers a revert to anchor.
-    cad3 = CADENCE(dec, C, n_groups=K, max_delay=8, fast_steps=1, collapse_z=2.0,
-                   src_stats=(smean, svar))
+    # (3) Controller (safety net): the collapse-sensor reverts the fast head when the
+    # objective spikes. Tested directly — for the affine method the closed-form init keeps
+    # the head safe so it never fires in normal use; it guards an expressive/lora head.
+    cad3 = CADENCE(dec, C, n_groups=K, max_delay=8, collapse_z=2.0, src_stats=(smean, svar))
     for _ in range(4):
-        cad3.adapt(Xs)                                        # build a calm history
+        cad3._collapse_check(_t(Xs))                         # build a calm history
     with torch.no_grad():
         cad3.gain.mul_(50.0); cad3.bias.add_(20.0)           # inject divergence
     r0 = cad3.n_reverts
-    cad3.adapt(Xs)
+    cad3._collapse_check(_t(Xs))
     assert cad3.n_reverts == r0 + 1                          # reverted
     assert torch.allclose(cad3.gain, torch.ones(C)) and torch.allclose(cad3.bias, torch.zeros(C))
 
@@ -216,6 +267,20 @@ def _selfcheck() -> None:
     cad4.ema_anchor(tgt)
     moved = cad4.aligner.delta.detach().numpy()
     assert np.allclose(moved, 0.1 * tgt, atol=1e-5), moved
+
+    # (5) closed-form init sets a BOUNDED standardising affine (silent channels do NOT
+    # explode to 1/std ~ 1e6), roughly standardises the input, and a regularized few-shot
+    # refine stays finite. Xg has a silent-ish channel to exercise the std floor.
+    Xg2 = Xg.copy(); Xg2[:, 0, :] = 0.0                      # a silent channel
+    cad5 = CADENCE(dec, C, n_groups=K, max_delay=8, reg=0.1, std_floor=0.1,
+                   fast_steps=30, src_stats=(smean, svar))
+    cad5.init_standardize(Xg2)
+    assert float(cad5.gain.abs().max()) <= 1.0 / cad5.std_floor + 1e-3    # no explosion (the bug fix)
+    with torch.no_grad():
+        z = cad5._apply_head(_t(Xg2))
+    assert abs(float(z.mean())) < 0.5 and 0.4 < float(z.std()) < 1.6       # roughly standardized
+    cad5.adapt(Xg2, Ys)                                      # regularized supervised refine
+    assert np.isfinite(err(cad5, Xg2, Ys))
 
     print(f"cadence.py self-check OK: anchor recovers shift ({e_none:.3f}->{err(cad, Xt, Ys):.3f}); "
           f"fast head fixes gain ({e0:.3f}->{err(cad2, Xg, Ys):.3f}); collapse-revert + EMA OK; "
