@@ -45,7 +45,7 @@ from b2ss.intracortical import load_maze, make_windows, MazeData
 from b2ss.model import fractional_shift, DecoderConfig, B2SSDecoder
 from b2ss.baselines import GRUDecoder
 from b2ss.stats import mean_ci
-from b2ss.train import fit, predict
+from b2ss.train import fit, own_normalize, predict
 from b2ss.transfer import (TransferNormalizer, set_measured, fit_supervised,
                            fit_unsupervised, source_feature_stats)
 
@@ -144,9 +144,12 @@ def run_fold(subs, gids, target, n_groups, max_delay, epochs, fewshot_ns, seed):
     idx = np.random.default_rng(seed).choice(len(Xtr), size=min(nmax, len(Xtr)), replace=False)
     fit_supervised(free, Xtr[idx], Ytr[idx], epochs=120, lr=0.1, seed=seed)
     out[f"free-delay-{nmax}"] = r2_norm(free, Xte, Yte)
-    # full retrain on target's own data (calibration-cost upper bound)
-    rt = new_gru(C); fit(rt, Xtr, Ytr, epochs=epochs, lr=1e-3, batch_size=256, seed=seed)
-    out["full-retrain"] = r2(rt, Xte, Yte)
+    # full retrain on target's own data (calibration-cost upper bound). Re-normalises with
+    # the target's OWN channel statistics -- a retrain that keeps the source's normalisation
+    # is not an upper bound, it is a handicapped decoder (see train.own_normalize).
+    Xtr_o, Xte_o = own_normalize(Xtr, Xte)
+    rt = new_gru(C); fit(rt, Xtr_o, Ytr, epochs=epochs, lr=1e-3, batch_size=256, seed=seed)
+    out["full-retrain"] = r2(rt, Xte_o, Yte)
     return out
 
 

@@ -45,6 +45,40 @@ A related number worth keeping: a fresh per-session decoder scores **0.765** on 
 chronological split and **0.952** on a random one. Within-session non-stationarity is real
 and worth reporting — but it is a 0.19 effect, not the 0.6 the broken ceiling implied.
 
+### 0.2 What the follow-up work found (after the review's items were closed)
+
+Acting on the three "worth your attention" items turned up four more things, two of which
+change claims the review itself had accepted.
+
+1. **The same normalisation bug was in two more ceilings.** `run_transfer_modes.py` and
+   `run_xsession.py` both trained their `full-retrain` row on source-normalised inputs.
+   Fixed via a shared `train.own_normalize`. The decomposition spine is unaffected (it uses
+   `zero-shot − no-norm`, never a retrain row), but §II.8.1's "zero-shot beats retraining"
+   is downstream of it and was re-measured.
+
+2. **The collapse controller is not dormant, and it is what produces the zero-regret
+   result.** `cadence.py` claimed the controller never fires for the closed-form head. It
+   fires on ~3 of 10 real stream visits, precisely on the visits where the adapter would
+   otherwise have lost — reverting to identity turns a loss into an exact tie. CADENCE's
+   only surviving advantage was therefore mis-attributed to the shrinkage.
+
+3. **Hyperparameter-free empirical Bayes fails.** Replacing the hand-set τ with a proper
+   Efron–Morris estimator makes things dramatically worse (−0.400 R² at N=25, 0/8 sessions)
+   and collapses the method onto the plain standardiser.
+
+4. **…because the mechanism in the paper was wrong.** Same estimator, same N, different
+   draw: MPA on 25 *random* windows scores **0.520**; on the first 25 windows, **0.027**
+   (+0.493, p=0.003, 7/8 sessions). The online failure is **chronological bias**, not
+   sampling noise. This explains (3) — EB models variance and is blind to bias — and it
+   demotes the shrinkage from "principled denoiser" to "conservative hedge that happens to
+   work." It also shows shrinkage is not the best fix: 25 well-spread windows beat CADENCE
+   on 2000 consecutive ones.
+
+Finding 4 is a better contribution than the one it replaces, and it generalises past BCI:
+*online calibration data is not a random sample of the distribution it calibrates for*, and
+the standard "vary N and watch the curve" diagnostic cannot detect that, because it
+confounds sample size with sample position.
+
 ---
 
 ## The original review follows unchanged.

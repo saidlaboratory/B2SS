@@ -309,3 +309,7 @@ def test_recalibration_ceiling_does_not_mutate_the_frozen_source():
         assert np.isfinite(rs.recalibrate(dec, s, epochs=2, seed=0, scratch=scratch))
         assert torch.equal(dec.head.weight, before)
         assert all(not p.requires_grad for p in dec.parameters())
+
+
+def test_own_normalize_selfcheck():
+    train_mod._selfcheck_own_normalize()

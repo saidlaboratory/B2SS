@@ -72,12 +72,15 @@ def _fill_nan_forward(a: np.ndarray) -> np.ndarray:
 def list_sessions(indy_dir: Path = INDY_DIR, subject: str = "indy"):
     """Sessions for one subject, in date order (the filenames sort chronologically).
 
-    The same Zenodo record carries a second monkey, `loco` (10 sessions), on the same rig
-    and the same 96-electrode Utah array — so replicating any stream result on a second
-    subject is a download plus `--subject loco`, no code. We did not run it here: the loco
-    files are ~1.1-1.6 GB each (vs ~120 MB for indy) because they carry a second array, so
-    the set is ~12 GB. That is a real gap in the evidence, not a solved problem — a
-    single-subject result is a single-subject result.
+    The same Zenodo record carries a second monkey, `loco` (10 sessions), on the same rig,
+    so replicating a stream result on a second subject is a download plus `--subject loco`
+    — no code changes. Two things to know before reading a loco number as like-for-like:
+
+      * loco is implanted with TWO 96-electrode Utah arrays (M1 + S1), so `spikes` is
+        (units, 192) rather than (units, 96) and every script decodes from both areas. That
+        is why the files are ~1.1-2.0 GB each vs ~120 MB for indy. Slice to the first 96
+        channels for a strict M1-only comparison.
+      * 10 sessions over ~3 weeks, against indy's 11 over ~1 month.
     """
     return sorted(Path(indy_dir).glob(f"{subject}_*.mat"))
 

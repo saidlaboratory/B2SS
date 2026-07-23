@@ -14,9 +14,13 @@ standardiser as calibration data arrives. Adapted DOF = 2*n_chan, 2-3 orders bel
 retrain.
 
 The controller (collapse sensor) reverts the head to identity when the unsupervised
-objective spikes. For the closed-form affine head it does not fire in normal use — it
-exists to guard the expressive `head='lora'` variant, which is the structure ablation
-(`tta_baselines.free_lora`), not the method.
+objective spikes more than `collapse_z` sigma above its running history. It is NOT dormant:
+on the real Indy stream it fires on roughly 3 of 10 session visits, and those visits are
+exactly the ones where the adapter would otherwise have lost to the frozen decoder — the
+revert turns a loss into a tie. So CADENCE's "never worse than No-Adapt" property is
+produced by the shrinkage AND the controller together, not by the shrinkage alone. (An
+earlier version of this docstring claimed the controller never fired for the closed-form
+head. That was wrong, and it mis-attributed the one property of this method that survives.)
 
 EARLIER DESIGN, REMOVED: this adapter used to compose the affine with a
 `ConductionDelayAligner` "slow anchor". On every stream we ran, no measured conduction
@@ -59,7 +63,8 @@ class CADENCE(nn.Module):
     def __init__(self, decoder: nn.Module, n_chan: int, *, fast_lr: float = 0.05,
                  fast_steps: int = 20, collapse_z: float = 3.0, src_stats=None,
                  head: str = "affine", rank: int = 1, reg: float = 0.0,
-                 std_floor: float = 0.1, shrink_tau: float = 200.0, device: str = "cpu"):
+                 std_floor: float = 0.1, shrink_tau: float = 200.0, shrink: str = "fixed",
+                 device: str = "cpu"):
         super().__init__()
         self.decoder = decoder.eval()
         for p in self.decoder.parameters():
@@ -82,6 +87,9 @@ class CADENCE(nn.Module):
         self.reg = float(reg)                                # shrinkage toward the closed-form init
         self.std_floor = float(std_floor)                    # scale floor for robust standardisation
         self.shrink_tau = float(shrink_tau)                  # consolidation shrinkage strength (windows)
+        if shrink not in ("fixed", "eb"):
+            raise ValueError(f"shrink must be 'fixed' or 'eb', got {shrink}")
+        self.shrink = shrink                                 # see _shrink_weight
         self.register_buffer("_init_gain", torch.ones(n_chan))
         self.register_buffer("_init_bias", torch.zeros(n_chan))
         self._obj_hist: list[float] = []                     # collapse-sensor history
@@ -111,6 +119,56 @@ class CADENCE(nn.Module):
                 self.V.normal_(0, 0.01)
 
     @torch.no_grad()
+    def _shrink_weight(self, n, mt, st):
+        """How far to trust this session's per-channel estimates over the source prior.
+        Returns (w_mean, w_scale) — the mean and the scale need different answers.
+
+        `fixed`  w = n/(n+tau) for both. One scalar, one knob. A single tau is a compromise
+                 across calibration budgets: the sweep prefers tau≈800 at n=500 and tau≈200
+                 at n<=100 (RESULTS §I.3), which is what motivated the `eb` mode.
+
+        `eb`     Efron-Morris empirical Bayes, no hyperparameter. The input is
+                 source-standardised, so the prior is exactly "mean 0, scale 1" and the
+                 observed dispersion of the estimates around it is an estimate of the true
+                 drift PLUS sampling noise. Subtract the noise to get the prior variance,
+                 then weight by the usual posterior ratio:
+
+                     mean :  var_c = s_c^2/n            prior v_m = <m_c^2> - <var_c>
+                     scale:  var_c = s_c^2/(2n)         prior v_s = <(s_c-1)^2> - <var_c>
+                     w = v / (v + var_c)
+
+                 MEASURED RESULT: `eb` does NOT work here. It collapses onto a plain
+                 standardiser (+0.010 R2 over MPA at n=25) and loses to `fixed` by −0.400
+                 (0/8 sessions). The reason is instructive and is why `fixed` is still the
+                 default: EB assumes the session estimate is unbiased and merely noisy, so
+                 when the between-session drift is genuinely large it concludes "trust the
+                 data" and sets w -> 1. But the first n windows of a session are not a
+                 noisy-but-centred sample of it, they are a chronologically biased one, and
+                 no amount of correct variance accounting can see a bias. A fixed tau
+                 hedges against that bias by refusing to commit — which is the right
+                 behaviour for the wrong stated reason. Kept as a runnable negative result.
+
+                 The mean weight is per-channel (the sampling variance of a mean genuinely
+                 scales with the channel's variance); the scale weight is per-session,
+                 because the *relative* error of a sample std is 1/sqrt(2n) for every
+                 channel regardless of how loud it is. Getting that backwards — shrinking
+                 the scale per-channel by the channel's own variance — tells you to TRUST a
+                 quiet channel's tiny std, which is precisely the estimate that explodes the
+                 gain. Both weights -> 1 as n -> inf, recovering a plain standardiser.
+        """
+        if self.shrink == "fixed":
+            w = torch.as_tensor(n / (n + self.shrink_tau), dtype=torch.float32, device=mt.device)
+            return w, w
+        n = max(int(n), 1)
+        var_m = (st ** 2) / n                                    # sampling var of the mean
+        v_m = ((mt ** 2).mean() - var_m.mean()).clamp(min=0.0)   # noise-corrected prior var
+        w_mean = (v_m / (v_m + var_m)).clamp(0.0, 1.0)
+        var_s = (st ** 2) / (2 * n)                              # sampling var of the std
+        v_s = (((st - 1.0) ** 2).mean() - var_s.mean()).clamp(min=0.0)
+        w_scale = (v_s / (v_s + var_s.mean())).clamp(0.0, 1.0)
+        return w_mean, w_scale
+
+    @torch.no_grad()
     def init_standardize(self, X) -> None:
         """Zero-shot closed-form init: set the per-channel affine to standardize the target
         to the source distribution (mean 0, std 1) — the MPA-style solution that already
@@ -121,15 +179,14 @@ class CADENCE(nn.Module):
         Xt = _t(X, self.device)
         n = Xt.shape[0]                                       # windows available this session
         mt, st = Xt.mean(dim=(0, 2)), Xt.std(dim=(0, 2))
-        # CONSOLIDATION SHRINKAGE (the win over plain MPA): shrink the per-channel estimate
-        # toward the source prior (standardised input -> mean 0, std 1) by w = n/(n+tau).
-        # With few calibration windows the raw per-channel mean/std is noisy and a plain
-        # standardiser (MPA) collapses; leaning on the source prior stays robust. w -> 1 with
-        # ample data (full MPA), and the shrink also floors the scale so silent channels do
-        # not explode to gain = 1/std ~ 1e6. See RESULTS §9.4.
-        w = n / (n + self.shrink_tau)
-        m_s = w * mt                                          # -> source mean 0
-        s_s = (w * st + (1.0 - w) * 1.0).clamp(min=self.std_floor)  # -> source std 1
+        # CONSOLIDATION SHRINKAGE: pull each per-channel estimate toward the source prior
+        # (source-standardised input -> mean 0, std 1). With few calibration windows the raw
+        # per-channel mean/std is noisy and a plain standardiser is worse than not adapting;
+        # leaning on the prior keeps it safe, and the shrink also bounds the scale so a
+        # silent channel cannot explode to gain = 1/std. w -> 1 with ample data (full MPA).
+        w_m, w_s = self._shrink_weight(n, mt, st)
+        m_s = w_m * mt                                        # -> source mean 0
+        s_s = (w_s * st + (1.0 - w_s) * 1.0).clamp(min=self.std_floor)  # -> source std 1
         self.gain.copy_(1.0 / s_s)
         self.bias.copy_(-m_s / s_s)
         self._init_gain.copy_(self.gain)
@@ -242,8 +299,8 @@ def _selfcheck() -> None:
     assert torch.allclose(cad2.decoder.head.weight, w0)      # still frozen
 
     # (3) Controller (safety net): the collapse-sensor reverts the head when the objective
-    # spikes. Tested directly — for the closed-form affine it never fires in normal use;
-    # it guards the expressive lora head used as the structure ablation.
+    # spikes. It is live for the closed-form affine too — on the real Indy stream it fires
+    # on ~3 of 10 visits, which is where the zero-regret property comes from.
     cad3 = CADENCE(dec, C, collapse_z=2.0, src_stats=(smean, svar))
     for _ in range(4):
         cad3._collapse_check(_t(Xs))                         # build a calm history
@@ -253,6 +310,37 @@ def _selfcheck() -> None:
     cad3._collapse_check(_t(Xs))
     assert cad3.n_reverts == r0 + 1                          # reverted
     assert torch.allclose(cad3.gain, torch.ones(C)) and torch.allclose(cad3.bias, torch.zeros(C))
+
+    # (3b) empirical-Bayes shrinkage: no tau. More windows must mean more trust in the
+    # session, and the weights must stay in [0, 1] and keep the gain bounded.
+    cad_eb = CADENCE(dec, C, shrink="eb", src_stats=(smean, svar))
+    Xq = Xg.copy(); Xq[:, 0, :] *= 0.02                      # channel 0 barely fires
+
+    def wts(mod, A):
+        t = _t(A)
+        return mod._shrink_weight(len(A), t.mean((0, 2)), t.std((0, 2)))
+
+    (wm_few, ws_few), (wm_many, ws_many) = wts(cad_eb, Xq[:8]), wts(cad_eb, Xq)
+    assert float(ws_many) > float(ws_few)                    # more data -> trust the scale more
+    for w in (wm_few, wm_many, ws_few, ws_many):
+        assert 0.0 <= float(w.min()) and float(w.max()) <= 1.0
+
+    # No real mean drift here (the target is the source times a per-channel gain), so the
+    # observed spread of the means is pure sampling noise and EB must attribute it as such:
+    # w_mean stays ~0 at EVERY n. That is the estimator working, not failing — a fixed tau
+    # would happily fit that noise once n got large.
+    assert float(wm_few.mean()) < 0.05 and float(wm_many.mean()) < 0.05
+    # inject a genuine offset and it must now trust the data, increasingly so with n
+    Xo = (Xq + rng.normal(0, 0.5, C).astype("float32")[None, :, None]).astype("float32")
+    wm_o_few, wm_o_many = wts(cad_eb, Xo[:8])[0], wts(cad_eb, Xo)[0]
+    assert float(wm_o_many.mean()) > float(wm_o_few.mean()) > 0.05
+    cad_eb.init_standardize(Xq)                              # must stay bounded like `fixed`
+    assert float(cad_eb.gain.detach().abs().max()) <= 1.0 / cad_eb.std_floor + 1e-3
+    # the scale weight is per-session (a scalar), NOT per-channel: the relative error of a
+    # sample std is 1/sqrt(2n) for every channel, so a quiet channel's tiny std is not
+    # better estimated than a loud one's. Per-channel here would trust exactly the estimate
+    # that blows the gain up.
+    assert ws_many.numel() == 1 and wm_many.numel() == C
 
     # (4) memoryless by construction: two sessions in a row leave no trace of the first,
     # which is why the stream BWT is exactly 0 (a property, not an achievement — MPA

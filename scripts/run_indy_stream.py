@@ -52,7 +52,7 @@ import matplotlib.pyplot as plt
 from b2ss.indy import list_sessions, load_indy_session
 from b2ss.intracortical import make_windows
 from b2ss.baselines import GRUDecoder
-from b2ss.train import fit, predict
+from b2ss.train import fit, own_normalize, predict
 from b2ss.transfer import source_feature_stats
 from b2ss.cadence import CADENCE
 from b2ss.tta_baselines import NoAdapt, Tent, CoTTA, RDumb, free_lora
@@ -75,7 +75,7 @@ def zc(a, mu, sd):
     return ((a - mu) / sd).astype(np.float32)
 
 
-def load_windows(win: int, subject: str = "indy"):
+def load_windows(win: int, subject: str = "indy", max_chan: int = 0):
     """Load every downloaded session as windows, sliced to the common (first n_chan)
     electrode set so channels correspond across days."""
     out = []
@@ -90,6 +90,8 @@ def load_windows(win: int, subject: str = "indy"):
     if not out:
         sys.exit("No readable Indy sessions in ~/b2ss_data/indy (see b2ss/indy.py).")
     n_chan = min(x[1].shape[1] for x in out)
+    if max_chan:
+        n_chan = min(n_chan, max_chan)
     for row in out:
         row[1] = row[1][:, :n_chan]                          # first n_chan electrodes
     return out, n_chan
@@ -138,9 +140,7 @@ def recalibrate(dec, s, *, epochs, seed, scratch):
 
     Targets stay in the source frame so velocity R2 is measured in the same units as every
     other method in the table."""
-    Xtr, Xte = s["Xtr_full"], s["Xte"]
-    mu, sd = Xtr.mean((0, 2), keepdims=True), Xtr.std((0, 2), keepdims=True) + 1e-6
-    Xtr, Xte = zc(Xtr, mu, sd), zc(Xte, mu, sd)
+    Xtr, Xte = own_normalize(s["Xtr_full"], s["Xte"])
     model = GRUDecoder(Xtr.shape[1]) if scratch else copy.deepcopy(dec)
     for p in model.parameters():
         p.requires_grad_(True)
@@ -163,6 +163,8 @@ def main():
     ap.add_argument("--reset-every", type=int, default=3)
     ap.add_argument("--methods", default="no-adapt,mpa,tent,cotta,rdumb,nomad,free-lora,cadence")
     ap.add_argument("--no-retrain", action="store_true", help="skip the recalibration ceilings")
+    ap.add_argument("--max-chan", type=int, default=0,
+                    help="cap channels (loco=192 M1+S1; 96 for M1-only)")
     ap.add_argument("--subject", default="indy",
                     help="`loco` is the second monkey on the same rig — see b2ss/indy.py")
     ap.add_argument("--quick", action="store_true")
@@ -174,7 +176,7 @@ def main():
         args.no_retrain = True
     RESULTS.mkdir(exist_ok=True)
 
-    data, n_chan = load_windows(WIN, args.subject)
+    data, n_chan = load_windows(WIN, args.subject, args.max_chan)
     if len(data) <= args.held_in + 1:
         sys.exit(f"Need > held_in+1 sessions; have {len(data)}, held_in={args.held_in}.")
     methods = args.methods.split(",")
@@ -190,6 +192,7 @@ def main():
     rows = methods + ([] if args.no_retrain else ["finetune", "scratch"])
     per = {m: {k: [] for k in METRICS} for m in rows}
     traj_by_seed = {m: [] for m in rows}
+    reverts = {m: [] for m in methods}          # collapse-controller firings per seed
 
     for seed in range(args.seeds):
         import torch
@@ -227,8 +230,10 @@ def main():
         }
         base = None
         for m in methods:
-            out = run_stream(factories[m](), sessions, schedule, score_fn=vel_r2)
+            adapter = factories[m]()
+            out = run_stream(adapter, sessions, schedule, score_fn=vel_r2)
             traj = [r for _, r in out["visits"]]
+            reverts[m].append(int(getattr(adapter, "n_reverts", 0)))   # controller activity
             if base is None:
                 base = traj                                  # No-Adapt reference for regret
             mm = metrics_of(traj, out["first_visit"], out["last_visit"], args.collapse_floor, base)
@@ -318,12 +323,36 @@ def main():
         "collapse_floor": args.collapse_floor, "adapt_cap": args.adapt_cap,
         "metrics": {m: {k: ci[m][k] for k in METRICS} for m in per},
         "trajectories": traj_by_seed,
+        "collapse_reverts": reverts,
         "cadence_vs": {o: d for o, d in lines},
         "structure_ablation_tent_vs_freelora": abl,
         "verdict": verdict,
     }, indent=2))
     _regret_figure(ci, methods)
+    _regret_trace_figure(traj_by_seed, methods)
     print(f"figure: results/indy_stream_pareto.png; data: results/indy_stream.json\n")
+
+
+def _regret_trace_figure(traj_by_seed, methods):
+    """Per-visit regret vs No-Adapt. The summary table gives a rate and a mean; this shows
+    WHERE each method loses, which is the part a deployment cares about. Anything below the
+    zero line is a session where turning the adapter on made the decode worse."""
+    base = np.asarray(traj_by_seed["no-adapt"], float).mean(0)
+    show = [m for m in ("cadence", "mpa", "cotta", "rdumb", "tent") if m in methods]
+    plt.figure(figsize=(7.5, 4.2))
+    for m in show:
+        d = np.asarray(traj_by_seed[m], float).mean(0) - base
+        plt.plot(range(1, len(d) + 1), d, "o-", lw=2.2 if m == "cadence" else 1.2,
+                 ms=5 if m == "cadence" else 3.5, label=m, zorder=3 if m == "cadence" else 2)
+    plt.axhline(0, color="0.35", lw=1.2)
+    plt.axhspan(plt.ylim()[0], 0, color="#d62728", alpha=0.06, zorder=0)
+    plt.annotate("adapting HURT here", (0.02, 0.04), xycoords="axes fraction",
+                 fontsize=8, color="#d62728")
+    plt.xlabel("stream visit (temporal order; last visits are revisits)")
+    plt.ylabel("Δ velocity R² vs No-Adapt")
+    plt.title("Per-visit regret: where each adapter loses to leaving the decoder alone")
+    plt.grid(alpha=0.3); plt.legend(fontsize=8, ncol=len(show))
+    plt.tight_layout(); plt.savefig(RESULTS / "indy_stream_regret.png", dpi=120); plt.close()
 
 
 def _regret_figure(ci, methods):
