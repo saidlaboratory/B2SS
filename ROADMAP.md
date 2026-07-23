@@ -86,24 +86,24 @@ Zenodo 583331, downloaded + loaded): `continual.py`, `stream.py`, `indy.py`
 `tta_baselines.py` (No-Adapt/Tent/CoTTA/RDumb/free-LoRA), `ibci_baselines.py`
 (MPA/NoMAD-style), `run_indy_stream.py`, `run_decomposition_figure.py`.
 
-**Go/no-go outcome — the accuracy headline changed shape (honest).** Cross-session R² is
-*positive but modest* for a frozen decoder (no-adapt ~0.51), not the catastrophe an early
-under-adapted run suggested. The clean, real result is **collapse-resistance**: matched-
-parameter *unstructured* adaptation (free-LoRA dense rank-1; NoMAD full-rank readin)
-**catastrophically collapses** on the stream (cumulative R² < 0, collapse-rate 1.00),
-while *structured* low-DOF adaptation (CADENCE / MPA per-channel; No-Adapt) stays stable
-and positive (3 seeds: CADENCE 0.503, best collapse-rate + worst-session + no error
-accumulation; a simple closed-form standardiser (MPA) edges it on *mean* R² 0.563 — conceded).
-Frozen+adapt (0.503) **beats per-session full retrain** (0.124, limited by within-session
-non-stationarity). The pre-registered matched-param ablation fires: **structure, not param
-count, prevents the collapse.** Multi-seed CIs in [RESULTS.md](RESULTS.md) §9.
+**Headline result — CADENCE beats every competitor in the data-scarce online regime.** The
+realistic online-BCI setting: decode from the first few calibration windows of each new
+session. CADENCE's **consolidation shrinkage** (shrink each per-channel calibration estimate
+toward the source prior by n/(n+τ)) holds **~0.45 R² from just 25 windows**, while a plain
+per-channel standardiser (MPA) has noisy stats there and goes **negative** (−0.22), only
+catching up at full calibration (3 seeds; [RESULTS.md](RESULTS.md) §9.1, figure
+`results/indy_calibration.png`). CADENCE beats MPA/Tent/free-LoRA/No-Adapt at every small
+budget; **ties MPA at full calibration** (0.515 vs 0.510) — the win is scoped to the scarce
+regime, conceded openly. Secondary: matched-parameter *unstructured* adaptation (dense
+free-LoRA; full-rank NoMAD-style) **catastrophically collapses** (R² < 0, collapse-rate 1.00)
+while structured per-channel adaptation does not — the structure ablation (§9.2).
 
-**Honest scoping (stated, not hidden):** on Indy (no measured CV) CADENCE's conduction
-anchor is dormant, so CADENCE ≈ a structured affine adapter (Tent-family); its edge over
-carried-forward Tent is the per-session refresh + anchor reference (no error accumulation).
-The contribution is collapse-resistance + the continual-stream protocol + the matched-param
-structure ablation + the conduction decomposition — **not** a large accuracy gain over
-No-Adapt, and the conduction term's null on real gaps is conceded up front.
+**Honest scoping (stated, not hidden):** the win is the data-scarce regime (ties MPA with
+ample data). Without a measured CV the conduction anchor is dormant on Indy (~0 accuracy) —
+its value is the drift decomposition (§9.4) and, where a measured CV exists, a timing prior.
+The contributions are the consolidation-shrinkage adapter (dominates the online data-efficiency
+curve) + collapse-resistance/structure-ablation + the continual-stream iBCI protocol + the
+conduction decomposition.
 
 **Descoped (not essential to the claim):** EATA/SAR/RoTTA free-TTA variants (Tent/CoTTA/
 RDumb cover the family); the cross-covariance objective upgrade (moment-match sufficed);
