@@ -16,10 +16,13 @@ contributes **essentially nothing** (Δ velocity R² = −0.015 [−0.027, −0.
 same measurement on a gap that is timing-dominated by construction reads **+0.250**
 [+0.191, +0.309]. The positive control is what makes the null worth believing.
 
-The consequence: the drift that *does* dominate is per-channel gain and offset, and
-estimating that per session from a short calibration slice is data-starved. **CADENCE**
-shrinks each per-channel estimate toward the source prior by `w = n/(n+τ)`, so a frozen
-decoder adapts safely from the first few seconds of a new session instead of diverging.
+The consequence, and the part that generalises past BCI: the drift that *does* dominate is
+per-channel gain and offset, and the calibration data you get online is a **biased** sample
+of the session, not merely a small one. A standardiser fitted on the first 25 windows scores
+0.027; on 25 *random* windows it scores 0.520. Same estimator, same N — so the usual
+"vary N and watch the curve" diagnostic cannot see the real problem. **CADENCE** shrinks each
+estimate toward the source prior, which helps by declining to commit to the biased estimate;
+the textbook empirical-Bayes version, which models variance instead, fails outright.
 
 See [RESULTS.md](RESULTS.md) for every number and what it does and does not show,
 [BETTER.md](BETTER.md) for the adversarial review this repo was rebuilt against,
@@ -64,7 +67,7 @@ Requires Python 3.10+ and PyTorch 2.x (CPU is fine for the synthetic harness).
 ## Quickstart
 
 ```bash
-# 1. Everything runnable, no downloads (31 checks, ~30 s)
+# 1. Everything runnable, no downloads (32 checks, ~20 s)
 python -m pytest tests/ -q
 
 # 2. The paper's central figure — timing vs representation, same units.
@@ -120,7 +123,8 @@ python scripts/run_moabb_transfer.py    # EEG breadth (Zhou2016 cross-session; n
 # Phase 11 (the current work) — real monkey-Indy stream, 11 sessions over ~1 month.
 python scripts/run_decomposition_figure.py   # THE SPINE: timing vs representation marginal
 python scripts/run_indy_calibration.py       # online data-efficiency curve, out to full calibration
-python scripts/run_tau_sweep.py              # is tau tuned on the eval sessions? (LOSO selection)
+python scripts/run_calibration_bias.py       # WHY it fails: same N, different draw (bias, not noise)
+python scripts/run_tau_sweep.py              # tau not tuned on eval (LOSO) + the empirical-Bayes null
 python scripts/run_indy_stream.py            # the continual stream: regret + recalibration ceilings
 
 # Real-time inference latency vs the proposal's <50 ms budget.
@@ -171,7 +175,8 @@ b2ss/
 scripts/
   run_decomposition_figure.py   THE SPINE: timing vs representation marginal
   run_indy_calibration.py       online data-efficiency curve out to full calibration
-  run_tau_sweep.py              τ / std_floor sweep + leave-one-session-out selection
+  run_calibration_bias.py       same N, different draw — bias vs noise (the general lesson)
+  run_tau_sweep.py              τ / std_floor sweep, LOSO selection, empirical-Bayes null
   run_indy_stream.py            continual stream: regret, ceilings, structure ablation
   run_transfer_modes.py         calibration-cost spectrum (the timing-dominated control)
   run_xsession.py               real cross-session MC_Maze (the representation null)
@@ -186,7 +191,7 @@ scripts/
   bench_latency.py              inference latency vs 50 ms budget
   reproduce.py                  one command → all results + figures
 tests/
-  test_b2ss.py                  31 runnable checks
+  test_b2ss.py                  32 runnable checks
 ```
 
 ## License

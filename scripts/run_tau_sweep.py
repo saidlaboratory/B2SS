@@ -104,6 +104,7 @@ def main():
     # tau[N][tau] and floor[N][floor] -> list of R2, (seed-major, session-minor)
     tau_r2 = {N: {t: [] for t in TAUS} for N in Ns}
     floor_r2 = {N: {f: [] for f in FLOORS} for N in Ns}
+    eb_r2 = {N: [] for N in Ns}                 # hyperparameter-free alternative to tau
     for seed in range(args.seeds):
         import torch
         torch.manual_seed(seed)
@@ -131,6 +132,8 @@ def main():
                 for f in FLOORS:
                     c = CADENCE(dec, n_chan, src_stats=src_stats, shrink_tau=DEF_TAU, std_floor=f)
                     c.adapt(Xn); floor_r2[N][f].append(vel_r2(Yte, c.predict(Xte)))
+                c = CADENCE(dec, n_chan, src_stats=src_stats, shrink="eb")   # no tau at all
+                c.adapt(Xn); eb_r2[N].append(vel_r2(Yte, c.predict(Xte)))
         print(f"  seed {seed} done")
 
     def per_session(d):                      # (seed-major, session-minor) -> (n_sess,)
@@ -158,6 +161,19 @@ def main():
     print(f"  {'N=':>8}" + "".join(f"{'f=' + str(f):>10}" for f in FLOORS))
     for N in Ns:
         print(f"  {N:>8}" + "".join(f"  {per_session(floor_r2[N][f]).mean():+.3f}   " for f in FLOORS))
+
+    print("\nhyperparameter-free empirical Bayes vs the fixed default (paired over sessions)\n")
+    eb = {}
+    for N in Ns:
+        grid_def = per_session(tau_r2[N][DEF_TAU])
+        eb[N] = paired_by_unit(eb_r2[N], tau_r2[N][DEF_TAU], n_sess)   # both raw, same layout
+        print(f"  N={N:>5}  eb {per_session(eb_r2[N]).mean():+.3f}  vs fixed "
+              f"{grid_def.mean():+.3f}   delta {eb[N]['delta']:+.3f} "
+              f"[{eb[N]['ci'][0]:+.3f},{eb[N]['ci'][1]:+.3f}]  p={eb[N]['p']:.3f}  "
+              f"{eb[N]['won']}/{eb[N]['n']}")
+    print("  (EB assumes the session estimate is unbiased and only noisy. The first N windows\n"
+          "   of a session are a chronologically BIASED sample, which variance accounting\n"
+          "   cannot see -- so EB trusts the data and collapses onto a plain standardiser.)")
 
     worst_gain = max(abs(loso[N]["vs_default"]["delta"]) for N in Ns)
     sig = [N for N in Ns if loso[N]["vs_default"]["p"] < 0.05]
@@ -187,6 +203,8 @@ def main():
         "tau_r2": {str(N): {str(t): mean_ci(tau_r2[N][t]) for t in TAUS} for N in Ns},
         "floor_r2": {str(N): {str(f): mean_ci(floor_r2[N][f]) for f in FLOORS} for N in Ns},
         "loso": {str(N): loso[N] for N in Ns},
+        "eb_r2": {str(N): mean_ci(eb_r2[N]) for N in Ns},
+        "eb_vs_fixed": {str(N): eb[N] for N in Ns},
         "verdict": verdict,
     }, indent=2))
     print("figure: results/tau_sweep.png; data: results/tau_sweep.json\n")

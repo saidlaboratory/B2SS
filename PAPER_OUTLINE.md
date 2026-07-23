@@ -34,18 +34,31 @@ number on how much of the second is the first. We have, with a positive control.
    dominates by construction and the marginal separates from zero, and (b) two independent
    real-data nulls — intracortical multi-session and EEG cross-session. The control is what
    licenses the nulls: an instrument that reads zero everywhere measures nothing.
-2. **A failure mode of the standard per-session standardiser.** On a sparse 96-electrode
-   array, ~15% of channels are near-silent over a 25-window calibration slice. Estimating
-   per-channel scale from that slice and dividing by it does not degrade gracefully — it
-   **diverges to negative R²**. The fix is a scale floor plus evidence-weighted shrinkage
-   (`w = n/(n+τ)`), and we report the failure, the floor-only fix, and the shrinkage fix as
-   three separate rows so the contribution of each is visible.
-3. **A continual-stream iBCI protocol with a stability metric that discriminates.** Streaming
+2. **Online calibration data is not a random sample of the session it calibrates for —
+   and that, not sampling noise, is why test-time adaptation fails at small budgets.**
+   Hold N fixed and change only how the windows are drawn: a per-session standardiser
+   scores 0.027 on the first 25 windows of a session and **0.520 on 25 random ones**
+   (+0.493, p=0.003, 7/8 sessions). Twenty-five well-spread windows beat two thousand
+   consecutive ones. Three things follow: the standard "vary N and watch the curve"
+   diagnostic cannot see this (it confounds sample size with sample position); a
+   principled variance-based correction is structurally blind to it (our own textbook
+   empirical-Bayes version collapses onto the baseline, −0.400 R² at N=25); and the
+   effective fix is temporal spread rather than a better estimator. This is the
+   contribution that generalises past BCI.
+
+3. **A failure mode of the standard per-session standardiser.** On a sparse 96-electrode
+   array, ~15% of channels are near-silent over a 25-window calibration slice, and dividing
+   by that scale does not degrade gracefully — it **diverges to negative R²**. A scale floor
+   stops the divergence; conservative shrinkage (`w = n/(n+τ)`) additionally hedges the bias
+   in (2) and recovers most of the gap. We report the failure, the floor-only fix, and the
+   shrinkage fix as separate rows, and we say plainly that the shrinkage works for a
+   different reason than its derivation claims.
+4. **A continual-stream iBCI protocol with a stability metric that discriminates.** Streaming
    sessions in temporal order with revisits, scored on cumulative/worst-session R², backward
    transfer, and **regret vs No-Adapt** (how often, and how badly, adapting loses). We adopted
    regret after finding that a fixed R²-floor collapse-rate assigns the identical value to our
    method and to doing nothing — a metric that cannot lose is not evidence.
-4. **A negative result chain worth citing.** Four falsified hypotheses with mechanisms, not
+5. **A negative result chain worth citing.** Four falsified hypotheses with mechanisms, not
    just outcomes: within-subject CV gating (a decoder learns fixed structural delays from
    data), delay alignment (same reason), real cross-session conduction normalisation (the gap
    is not timing), EEG conduction alignment (ditto). §7.
@@ -62,6 +75,10 @@ State this in the paper, in these words, before a reviewer does. See
   three off the shelf.
 - **The measurement is ours**, and so is the observation that the standard estimator
   *diverges* rather than degrades in this regime, and the protocol that makes it visible.
+- **We cannot claim the principled pedigree either.** The textbook empirical-Bayes version
+  of our own estimator fails on this data (§I.3), because it models variance and the problem
+  is bias. The fixed τ is a conservative hedge that works for a reason its derivation does
+  not give. Say so; a reviewer who derives the "correct" version will find the same thing.
 - **vs learnable-delay models (DCLS/SNN)**: they learn per-connection delays from data; we
   measure whether delay is where the cross-session gap lives at all, and answer no.
 - **vs LFADS / NoMAD / MPA**: decoder-side stabilisers. NoMAD and MPA are our baselines, not
@@ -78,7 +95,8 @@ State this in the paper, in these words, before a reviewer does. See
 | Null II | EEG cross-session (Zhou2016) | `run_moabb_transfer.py` |
 | **The decomposition figure** | all three in the same units — the paper's centre | `run_decomposition_figure.py` |
 | Consequence | per-channel gain/offset drift; the standardiser's divergence; shrinkage | `run_indy_calibration.py` |
-| Hyperparameters | τ sweep + leave-one-session-out selection (not tuned on eval) | `run_tau_sweep.py` |
+| **Why it fails** | same N, different draw — bias not noise; the general lesson | `run_calibration_bias.py` |
+| Hyperparameters | τ sweep + LOSO selection; the empirical-Bayes negative | `run_tau_sweep.py` |
 | Continual stream | protocol, regret metric, recalibration ceilings, structure ablation | `run_indy_stream.py` |
 | What we ruled out | the four falsified hypotheses and why each failed | RESULTS §1–8 |
 | Limitations | §5 | — |

@@ -32,7 +32,7 @@ injected** provide it: there, timing is the entire gap by construction.
 
 | setting | conduction/timing marginal (Δ velocity R² over no-norm) |
 | --- | --- |
-| **positive control** — injected latency, real MC_Maze spikes | **+0.250 [+0.191, +0.309]** (CI-separated) |
+| **positive control** — injected latency, real MC_Maze spikes | **+0.249 [+0.174, +0.324]** (CI-separated) |
 | real multi-session intracortical — MC_Maze S/M/L, per-electrode | **−0.015 [−0.027, −0.004]** (null) |
 | real cross-session EEG — Zhou2016 (accuracy units) | **−0.003** (null) |
 
@@ -61,9 +61,15 @@ accumulated. That is where it breaks.
 On the 96-electrode Indy array, **14.5% of channels have sd < 0.1 over a 25-window slice**
 (measured, `results/indy_calibration.json`). Estimating a per-channel scale from that slice
 and dividing by it does not degrade gracefully — it **diverges**. CADENCE shrinks each
-estimate toward the source prior by `w = n/(n+τ)` (empirical Bayes; the estimator is
-standard — BACKGROUND §10), so the adapter starts near the identity and earns its way to a
-full standardiser as evidence arrives.
+estimate toward the source prior by `w = n/(n+τ)`, so the adapter starts near the identity
+and earns its way to a full standardiser as evidence arrives. The estimator is standard —
+BACKGROUND §10.
+
+> **The reason this works is not the reason we first gave.** See §I.2b: the small-budget
+> failure is *chronological bias*, not sampling noise, and shrinkage helps because it
+> declines to commit to a biased estimate rather than because it denoises a noisy one. The
+> distinction is not cosmetic — it predicts which fixes work, and the principled
+> noise-based fix (empirical Bayes) fails.
 
 Frozen GRU on the 3 earliest sessions, adapt label-free from the first N windows of each of
 8 held-out sessions, 3 seeds. `all` = every training window in the session (~15k, ~300 s) —
@@ -152,6 +158,85 @@ source prior makes adaptation safe and buys a small consistent gain; above ~2000
 the shrinkage is inert and the two methods are the same estimator. `tent` is a distant
 third throughout and `free-lora` never works.
 
+## I.2b. Why it actually fails: the calibration window is biased, not noisy
+
+§I.2 gives the standard explanation — few windows, noisy per-channel estimates. It is the
+explanation everyone reaches for, and testing it takes one change to the experimental
+design: hold the number of calibration windows fixed and change only *how they are drawn*.
+
+`run_calibration_bias.py`, 8 target sessions × 3 seeds:
+
+| | N=25 | N=50 | N=100 | N=200 | N=500 |
+| --- | --- | --- | --- | --- | --- |
+| MPA — **first** N windows (what an online BCI gets) | +0.027 | +0.049 | +0.123 | +0.233 | +0.258 |
+| MPA — **random** N windows (same N, no time bias) | **+0.520** | **+0.535** | **+0.537** | +0.543 | +0.544 |
+| CADENCE — first N | +0.437 | +0.455 | +0.464 | +0.455 | +0.396 |
+| CADENCE — random N | +0.451 | +0.474 | +0.498 | +0.521 | +0.539 |
+
+Paired over sessions, **random − first**:
+
+| | N=25 | N=100 | N=500 |
+| --- | --- | --- | --- |
+| MPA | **+0.493** (p=0.003, 7/8) | +0.414 (p=0.020, 7/8) | +0.286 (p=0.057, 7/8) |
+| CADENCE | +0.013 (p=0.176, 5/8) | +0.034 (p=0.082, 6/8) | +0.143 (p=0.038, 7/8) |
+
+**Twenty-five randomly-drawn windows are worth more than two thousand consecutive ones.**
+The estimator, the sample size, and the data are identical; only the draw changed. So the
+online failure is **chronological bias** — the opening minute of a session is systematically
+unrepresentative of the rest of it — and not sampling noise.
+
+Three consequences, in increasing order of how much they cost us:
+
+1. **§I.2's mechanism was wrong.** Shrinkage does not denoise a noisy estimate. It helps
+   because it *declines to commit* to a biased one, which is the right behaviour for a
+   different reason than the one we gave. CADENCE is nearly indifferent to the draw
+   (+0.013 at N=25) precisely because it barely uses it.
+2. **It predicts the empirical-Bayes failure exactly.** EB models sampling variance and is
+   structurally blind to bias, so it measures the large genuine drift, concludes "trust the
+   data", and inherits the bias — collapsing onto MPA (§I.3). A principled fix to the wrong
+   problem is still wrong.
+3. **Shrinkage is not the best available fix, and we should not present it as one.** An
+   unbiased sample of *the same size* beats it: MPA-random at N=25 (0.520) beats CADENCE on
+   the first 2000 windows (0.515). Where a deployment can spread its calibration windows
+   across a session — interleaved, or a brief revisit — that dominates any estimator-side
+   correction. CADENCE's honest niche is the genuine cold start, the first seconds of a
+   session, when no spread is available yet.
+
+**The general form of this**, which is the part worth taking to a test-time-adaptation
+audience rather than a BCI one: *online calibration data is not a random sample of the
+distribution it calibrates for.* Any TTA method whose statistics assume exchangeability
+inherits the bias, and the standard diagnostic — vary N and watch the curve — cannot see it,
+because it confounds sample size with sample position. Varying the draw at fixed N separates
+them.
+
+Figure: `results/calibration_bias.png`.
+
+### Second subject (loco) — a directional check, underpowered
+
+The obvious question is whether the bias effect is an Indy artifact. The same Zenodo record
+carries a second monkey, **loco**, and `run_calibration_bias.py --subject loco --max-chan 96`
+runs the identical diagnostic on it (M1-only, to match Indy's 96 channels). Honest caveats up
+front: we downloaded **6 of loco's 10 sessions** (the set is ~12 GB and this connection could
+not finish it), so with `--held-in 2` there are only **4 target sessions**, and loco's
+cross-session decoding from two source sessions is weak — absolute R² hovers near zero.
+
+| N | mpa-first | mpa-random | random − first (paired over 4 sessions) |
+| --- | --- | --- | --- |
+| 25 | −0.344 | −0.059 | **+0.285**, p=0.291, 4/4 sessions |
+| 50 | −0.074 | −0.025 | +0.050, p=0.437, 3/4 |
+| 100 | −0.006 | −0.015 | −0.008, p=0.900, 2/4 |
+
+**The direction agrees at the smallest budget** — a random draw beats the first-N draw on
+all four sessions at N=25, the same sign as Indy — **but it is not significant on four
+sessions** (p=0.291), and it does not persist at larger N where the base decoder is anyway
+barely above zero. loco's native 192-channel (M1+S1) configuration gives the same picture
+(+0.181 at N=25, p=0.434). So this is a **directional replication, not a demonstration**:
+consistent with the Indy finding, far too underpowered to stand on its own. Settling it needs
+the full 10-session loco set, which the download did not finish. We report it here rather
+than omit it, and we do not count it as confirmation.
+
+`results/calibration_bias_loco.json`.
+
 ## I.3. Is τ tuned on the evaluation sessions?
 
 `shrink_tau = 200` was a default, and it sits in the middle of the budget grid it is
@@ -176,6 +261,35 @@ noise: at that budget τ = 200 shrinks too little, trusting a per-session estima
 still noisy. LOSO picks τ = 800 there and recovers most of it. An honest reading is that a
 *single* τ is a compromise across budgets, and a schedule (τ growing with the array's
 sparsity, or selected online) is the obvious improvement we did not make.
+
+### Removing τ entirely — and why that makes things worse
+
+If a single τ is a compromise, the principled move is to stop guessing it. `shrink="eb"`
+estimates the shrinkage from the data (Efron–Morris, with the sampling noise subtracted from
+the observed dispersion; separate weights for the mean and the scale, because the relative
+error of a sample std is 1/√(2n) for every channel regardless of how loud it is). No
+hyperparameter at all.
+
+The comparison is run by `run_tau_sweep.py` (`shrink="eb"` column) at its budget grid; the
+full-grid numbers below are from the same code over all budgets:
+
+| N | 25 | 50 | 100 | 500 | 2000 | all |
+| --- | --- | --- | --- | --- | --- | --- |
+| MPA | +0.027 | +0.049 | +0.123 | +0.258 | +0.518 | +0.543 |
+| CADENCE, fixed τ=200 | **+0.437** | **+0.455** | **+0.464** | +0.396 | +0.515 | +0.544 |
+| CADENCE, empirical Bayes | +0.037 | +0.054 | +0.125 | +0.259 | +0.518 | +0.543 |
+
+`eb − fixed` at N=25 is **−0.400 [−0.635, −0.166], p=0.005, 0/8 sessions**. EB does not
+merely underperform — it **collapses onto the plain standardiser** it was supposed to
+improve (`eb − mpa` = +0.010, n.s.).
+
+§I.2b says why, and this is the cleanest evidence for it: EB accounts for variance and is
+blind to bias. Given genuinely large between-session drift it correctly concludes the
+session estimate is informative, sets `w → 1`, and inherits the full chronological bias. The
+fixed τ wins by being *unprincipled* — it hedges against a failure mode it was never
+designed to address. We keep `shrink="eb"` in the code as a runnable negative result rather
+than deleting it, because "the textbook version of our own estimator fails here" is the kind
+of thing a reader should be able to check.
 
 The **`std_floor` sweep is flat to three decimals** across 0.02–0.4 at every budget. That is
 not a null result, it is a structural fact: the shrunk scale `w·s_t + (1−w)·1` is already
@@ -260,6 +374,19 @@ decoder once. MPA loses on 10% of visits (mean shortfall 0.062), Tent on 50% (0.
 deployment question is "can I turn this on without risking a session," CADENCE and No-Adapt
 are the only two answers in the table, and CADENCE is +0.132 better than No-Adapt
 (p = 0.003, 8/10 visits).
+
+**But that property is the controller, not the shrinkage — and we had this wrong.** The
+collapse sensor reverts the fast head to identity when the unsupervised objective spikes,
+and on this stream it **fires on 3, 3, 2 visits** across the three seeds (0 for every other
+method — `results/indy_stream.json:collapse_reverts`). Those are exactly the visits where the
+adapter would otherwise have lost, so the revert converts a would-be loss into an exact tie
+with No-Adapt — which is *why* the regret is 0.000 rather than merely small, and why two
+visits in `results/indy_stream_regret.png` sit precisely on the zero line. An earlier version
+of `cadence.py` asserted the controller "does not fire in normal use" for the closed-form
+head; that was false, and it mis-credited to the shrinkage the one property of the method
+that survives scrutiny. The honest statement: **shrinkage keeps the adapter close to safe,
+and the controller catches the visits where close is not enough.** Figure:
+`results/indy_stream_regret.png`.
 
 **Collapse-rate is degenerate here and regret is not.** Note the collapse column: 0.10 for
 No-Adapt, MPA, CoTTA, RDumb *and* CADENCE — identically, across all three seeds. One hard
@@ -584,29 +711,37 @@ canonicalised + frozen; only the target-side alignment varies. Velocity R², 4 f
 
 | method | target labels | velocity R² (mean [95% CI]) |
 | --- | --- | --- |
-| no-norm (naive transfer) | 0 | 0.399 [0.274, 0.525] |
-| **zero-shot (measured CV)** | **0** | **0.649 [0.547, 0.751]** |
-| unsupervised (δ-fit) | 0 (unlabeled) | 0.302 [0.145, 0.460] |
-| few-shot(5) | 5 | 0.482 [0.364, 0.600] |
-| few-shot(20) | 20 | 0.548 [0.387, 0.708] |
-| few-shot(100) | 100 | 0.621 [0.522, 0.720] |
-| free-delay(100) *(ablation)* | 100 | 0.545 [0.430, 0.660] |
-| full-retrain (calibration cost) | all | 0.403 [0.320, 0.486] |
+| no-norm (naive transfer) | 0 | 0.406 [0.276, 0.536] |
+| **zero-shot (measured CV)** | **0** | **0.655 [0.555, 0.755]** |
+| unsupervised (δ-fit) | 0 (unlabeled) | 0.311 [0.155, 0.467] |
+| few-shot(5) | 5 | 0.388 [0.252, 0.524] |
+| few-shot(20) | 20 | 0.589 [0.456, 0.722] |
+| few-shot(100) | 100 | 0.637 [0.546, 0.728] |
+| free-delay(100) *(ablation)* | 100 | 0.553 [0.437, 0.669] |
+| full-retrain (own-normalised ceiling) | all | 0.439 [0.371, 0.507] |
 
 **This is the pivot's headline — and it's positive:**
 
 1. **Zero-shot beats retraining, with zero target data.** Measured-CV alignment
-   (0.649) beats no-norm by **+0.250 (CIs separated)** and beats full-retrain
-   (0.403). With a measured conduction, you transfer to a new subject *better than
-   collecting and retraining on that subject's data* — the calibration burden the
-   pivot set out to cut.
-2. **Clean calibration curve.** Few-shot climbs 0.48 → 0.55 → 0.62 for 5 → 20 → 100
-   labeled trials, approaching zero-shot — a modest amount of calibration recovers
-   most of the benefit.
-3. **The conduction structure helps.** Structured few-shot(100) (0.621) beats
-   unstructured free per-channel delays (0.545) by +0.076 — the low-dim per-tract
-   grouping is more data-efficient than free delays, validating the design.
-4. **Unsupervised fails honestly.** CORAL latent-moment matching (0.302) does *not*
+   (0.655) beats no-norm by **+0.249 (CIs separated)** and beats the
+   retraining ceiling (0.439). This claim survived the ceiling fix that
+   killed its counterpart on the Indy stream — and the contrast is informative. Here the
+   pseudo-subjects are one MC_Maze session with *injected delays*, so their per-channel
+   statistics are nearly identical to the source and the source normalisation costs the
+   ceiling almost nothing (0.439 own-normalised vs 0.403 before). On
+   Indy, where sessions are genuinely different days with real channel drift, the same fix
+   moved the ceiling from 0.124 to 0.757. **The handicap scales with how much the channel
+   statistics actually differ**, which is the thing this whole document is about.
+2. **Clean calibration curve.** Few-shot climbs 0.39 → 0.59 →
+   0.64 for 5 → 20 → 100 labeled trials, approaching zero-shot — a modest
+   amount of calibration recovers most of the benefit.
+3. **The conduction structure helps.** Structured few-shot(100) (0.637) beats
+   unstructured free per-channel delays (0.553) by +0.084 — the low-dim
+   per-tract grouping is more data-efficient than free delays. Caveat that belongs here: the
+   aligner is handed the *same* `arange(C) % 8` grouping used to inject the delays, so this
+   compares a correctly-specified structure against an unstructured one, not structure
+   discovery.
+4. **Unsupervised fails honestly.** CORAL latent-moment matching (0.311) does *not*
    identify the delays on real neural latents and even underperforms no-norm — the
    weak mode; needs a delay-sensitive objective (cross-covariance) as future work.
 
@@ -625,6 +760,11 @@ Velocity R² (consistent across all folds/seeds; see `results/xsession.json`):
 | unsupervised δ-fit | −0.071 [−0.165, 0.023] |
 | few-shot δ-fit (20 / 100) | 0.090 / 0.149 |
 | **full-retrain** | **0.759 [0.688, 0.830]** |
+
+_(The retrain here is not own-normalised, unlike the Indy stream ceiling — MC_Maze uses
+random trial splits, not a chronological one, so there is no opening-window bias to correct
+and the source vs own frame give nearly the same answer. The 0.759 is if anything a slight
+underestimate of the true ceiling, which only strengthens the verdict below.)_
 
 **Verdict — conduction alignment gives NO real cross-session benefit** (best δ-fit gain
 over no-norm = **−0.015**), and full-retrain dominates (0.759). Unlike the controlled spectrum
@@ -685,12 +825,25 @@ Everything a reviewer would otherwise have to find in the JSON themselves.
 
 **On CADENCE (§I.2–§I.4)**
 
-- The estimator is textbook empirical Bayes. Shrinking normalization statistics toward
-  source statistics is prior art in TTA. See BACKGROUND §10 — the novelty claim is narrow
-  and deliberately so.
+- The estimator resembles textbook empirical Bayes, and shrinking normalization statistics
+  toward source statistics is prior art in TTA (BACKGROUND §10) — but note §I.3: the
+  *actual* textbook version fails here, so we cannot claim the principled pedigree either.
+  A fixed τ works because it hedges against bias, which is not what the derivation says.
+- **The mechanism we first published for this was wrong.** We said the small-budget failure
+  was noisy estimates. It is chronological bias (§I.2b), which the noise story predicts
+  incorrectly in at least two checkable ways (EB should have helped; a random draw of the
+  same size should not have mattered). Both checks came out against the noise story.
+- **Shrinkage is not the best fix available.** 25 randomly-drawn calibration windows beat
+  CADENCE on 2000 consecutive ones. Where a deployment can spread calibration across a
+  session, that dominates any estimator-side correction; CADENCE's niche is the cold start.
 - The gain over **not adapting** is +0.029 to +0.056 R² at N ≤ 100 — small, consistent
   (7–8/8 sessions), and the number to quote. The large margins in earlier drafts were
   measured against a baseline that was diverging for want of a one-line scale floor.
+- **The zero-regret property is not the shrinkage alone.** The collapse controller fires on
+  ~3 of 10 stream visits, and those are the visits where the adapter would otherwise have
+  lost — it reverts to identity, converting a loss into an exact tie. An earlier docstring
+  claimed the controller never fired for the closed-form head; that was wrong and it
+  mis-attributed the one property of the method that survives. See §I.4.
 - CADENCE **does not lead the continual stream**. See §I.4.
 - At full calibration the shrinkage is inert (`w ≈ 0.99`) and CADENCE *is* MPA.
 - A single fixed τ is a compromise: at N=500 it under-shrinks and CADENCE drops below

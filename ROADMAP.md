@@ -59,6 +59,31 @@ Related, and worth reporting on its own: a fresh per-session decoder scores 0.76
 chronological split and 0.952 on a random one. Within-session non-stationarity is real, and
 it is a 0.19 effect — not the 0.6 the broken ceiling implied.
 
+### The follow-up: acting on the review's items turned up a bigger finding
+
+Four more things surfaced after the review's own list was closed. Two of them change claims
+the review had accepted.
+
+- **The ceiling bug was in two more scripts** (`run_transfer_modes.py`, `run_xsession.py`),
+  now fixed via a shared `train.own_normalize`.
+- **The collapse controller is not dormant.** It fires on ~3 of 10 real stream visits, on
+  exactly the visits where the adapter would otherwise have lost — so CADENCE's zero-regret
+  property comes from the shrinkage *and* the controller, not the shrinkage alone. The
+  docstring said the opposite.
+- **Hyperparameter-free empirical Bayes fails** (−0.400 R² at N=25, 0/8 sessions), collapsing
+  the method onto the plain standardiser it was meant to improve.
+- **…because the stated mechanism was wrong.** Same estimator, same N, different draw: MPA
+  scores 0.027 on the first 25 windows of a session and **0.520 on 25 random ones** (+0.493,
+  p=0.003, 7/8). The online failure is **chronological bias**, not sampling noise. That
+  explains the EB failure (EB models variance, is blind to bias) and demotes the shrinkage
+  from "principled denoiser" to "conservative hedge that happens to work" — and shows it is
+  not even the best fix, since 25 well-spread windows beat 2000 consecutive ones.
+
+The last one generalises past BCI and is now contribution #2 of the paper: *online
+calibration data is not a random sample of the distribution it calibrates for*, and the
+standard vary-N diagnostic cannot see it because it confounds sample size with sample
+position. Script: `run_calibration_bias.py`.
+
 ### The claim now
 
 **Spine:** a calibrated decomposition of the cross-session gap into timing and
@@ -78,17 +103,21 @@ no accuracy on any real gap; one subject.
 Frozen GRU backbone (`baselines.GRUDecoder`) + a per-channel affine head, fit in closed form
 by consolidation shrinkage `w = n/(n+τ)` toward the source prior, with a scale floor. 2·n_chan
 adapted parameters. Memoryless across sessions by construction (hence BWT = 0 — a property,
-not an achievement; MPA shares it). A collapse controller guards the expressive `head='lora'`
-variant used as the structure ablation; it does not fire for the closed-form head.
+not an achievement; MPA shares it). A collapse controller reverts the head to identity when
+the unsupervised objective spikes — on the real stream it fires on ~3 of 10 visits, exactly
+those where the adapter would otherwise lose, and it is what makes the regret-vs-No-Adapt
+zero (not the shrinkage alone; see the follow-up above).
 
 ### Build status
 
-All modules and scripts built and green (**30 self-checks / tests**), on **real** data
-(11 monkey-Indy sessions, Zenodo 583331): `continual.py` (+ regret), `stream.py`, `indy.py`
-(96 electrodes; `--subject loco` ready for the second monkey), `cadence.py`, `tta_baselines.py`,
-`ibci_baselines.py` (floored MPA + NoMAD), `stats.py` (+ `paired_by_unit`),
-`run_indy_calibration.py`, `run_tau_sweep.py`, `run_indy_stream.py`,
-`run_decomposition_figure.py`. All wired into `scripts/reproduce.py`.
+All modules and scripts built and green (**32 self-checks / tests**), on **real** data
+(11 monkey-Indy sessions, Zenodo 583331; a 6-session monkey-loco replication via
+`--subject loco --max-chan 96`): `continual.py` (+ regret), `stream.py`, `indy.py`,
+`cadence.py` (+ `shrink="eb"` empirical-Bayes null), `tta_baselines.py`,
+`ibci_baselines.py` (floored MPA + NoMAD), `train.py` (+ `own_normalize`),
+`stats.py` (+ `paired_by_unit`), `run_indy_calibration.py`, `run_calibration_bias.py`,
+`run_tau_sweep.py`, `run_indy_stream.py`, `run_decomposition_figure.py`. All wired into
+`scripts/reproduce.py`.
 
 ### Pre-registered criteria — outcome, reported straight
 
@@ -111,8 +140,9 @@ built on what was:
   not, with the optimiser held fixed: **Tent − free-LoRA = +0.556 [+0.337, +0.776], p<0.001,
   10/10 visits.** The original CADENCE-vs-free-LoRA framing confounded structure with
   optimiser and is not used.
-- ✓ **DECOMPOSITION (guaranteed).** Both brackets landed: **+0.250 [+0.191, +0.309]** on the
-  injected rig, **−0.015 [−0.027, −0.004]** on real cross-session, **−0.003** on EEG.
+- ✓ **DECOMPOSITION (guaranteed).** Both brackets landed: **+0.249 [+0.174, +0.324]** on the
+  injected rig (own-normalised ceiling), **−0.015 [−0.027, −0.004]** on real cross-session,
+  **−0.003** on EEG.
 - ✓ **Concessions stated up front** — now including the ones the review forced, and the one
   the review itself missed.
 

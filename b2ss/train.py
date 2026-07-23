@@ -93,6 +93,29 @@ def fit(model: B2SSDecoder, X, Y, *, cv=None, cv_sd=None, delays=None, epochs: i
     return TrainResult(best_val=best_val, epochs_run=len(history), history=history)
 
 
+def own_normalize(Xfit, *others):
+    """Re-standardise per channel using Xfit's OWN statistics. Returns (Xfit, *others).
+
+    Every "retrain / recalibrate on the target's own data" baseline in this repo needs
+    this. Those baselines are handed inputs already z-scored by the SOURCE session's
+    per-channel statistics — which is exactly the distribution shift the alignment methods
+    exist to correct — and then judged as an upper bound. They are not an upper bound in
+    that frame: on three Indy sessions the same fine-tune scores 0.024 source-normalised
+    and 0.741 own-normalised. Applying this to already-source-normalised input is
+    equivalent to standardising the raw input (a composition of per-channel affines), so
+    call sites do not need the raw arrays.
+
+    Targets are deliberately NOT touched: leaving them in the shared frame keeps R2
+    comparable across every method in the same table.
+    """
+    Xfit = np.asarray(Xfit, np.float32)
+    mu = Xfit.mean((0, 2), keepdims=True)
+    sd = Xfit.std((0, 2), keepdims=True) + 1e-6
+    out = [((Xfit - mu) / sd).astype(np.float32)]
+    out += [((np.asarray(o, np.float32) - mu) / sd).astype(np.float32) for o in others]
+    return out[0] if not others else tuple(out)
+
+
 @torch.no_grad()
 def predict(model: B2SSDecoder, X, cv=None, cv_sd=None, delays=None, device: str = "cpu") -> np.ndarray:
     """Regression -> (N, out); classification -> logits (N, n_classes)."""
@@ -122,6 +145,30 @@ def decode_continuous(model: B2SSDecoder, eeg: np.ndarray, cv: float,
     out[:, WIN - 1:] = preds.T
     out[:, :WIN - 1] = preds[0][:, None]
     return out
+
+
+def _selfcheck_own_normalize() -> None:
+    """own_normalize must (a) standardise the fit array per channel, (b) apply the SAME
+    transform to the others, and (c) be idempotent w.r.t. a prior per-channel affine --
+    that last property is why call sites can pass already-source-normalised input."""
+    rng = np.random.default_rng(0)
+    X = (rng.standard_normal((200, 5, 20)) * np.array([0.01, 1, 5, 0.5, 2])[None, :, None]
+         + np.arange(5)[None, :, None]).astype("float32")
+    Xte = (rng.standard_normal((50, 5, 20)) * np.array([0.01, 1, 5, 0.5, 2])[None, :, None]
+           + np.arange(5)[None, :, None]).astype("float32")
+    a, b = own_normalize(X, Xte)
+    assert np.allclose(a.mean((0, 2)), 0, atol=1e-5) and np.allclose(a.std((0, 2)), 1, atol=1e-3)
+    assert abs(float(b.mean())) < 0.5                      # same transform, not refit
+    # Idempotent through any prior per-channel affine (that prior affine is the source
+    # z-scoring). Exact in real arithmetic; the tolerance is the +1e-6 scale epsilon, which
+    # matters only for the deliberately near-silent channel 0 (sd 0.01) — the same channel
+    # that makes an unregularised standardiser explode.
+    src = ((X - X.mean((0, 2), keepdims=True) * 0.3) / 7.0).astype("float32")
+    src_te = ((Xte - X.mean((0, 2), keepdims=True) * 0.3) / 7.0).astype("float32")
+    c, d = own_normalize(src, src_te)
+    assert np.allclose(a[:, 1:], c[:, 1:], atol=1e-4) and np.allclose(b[:, 1:], d[:, 1:], atol=1e-4)
+    assert np.allclose(a, c, atol=5e-3) and np.allclose(b, d, atol=5e-3)
+    print("train.py own_normalize OK: standardises, shares the transform, affine-idempotent")
 
 
 def _selfcheck() -> None:

@@ -80,6 +80,8 @@ def main():
     ap.add_argument("--fast-steps", type=int, default=20)
     ap.add_argument("--budgets", default="25,50,100,200,500,2000,all",
                     help="`all` = every training window in the session (true full calibration)")
+    ap.add_argument("--max-chan", type=int, default=0,
+                    help="cap channels (loco has 192 = M1+S1; use 96 for M1-only like-for-like)")
     ap.add_argument("--subject", default="indy",
                     help="`loco` is the second monkey on the same rig — see b2ss/indy.py")
     ap.add_argument("--quick", action="store_true")
@@ -99,6 +101,8 @@ def main():
         X, Y, split, _ = make_windows(d, WIN)
         data.append((p.stem, X, Y, split))
     n_chan = min(x[1].shape[1] for x in data)
+    if args.max_chan:
+        n_chan = min(n_chan, args.max_chan)
     targets = list(range(args.held_in, len(data)))
     n_units = len(targets)
     print(f"\nIndy online data-efficiency | {len(data)} sessions, {n_chan} electrodes | "

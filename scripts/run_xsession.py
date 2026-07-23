@@ -38,7 +38,7 @@ import torch
 from b2ss.intracortical import common_electrodes, load_session, make_windows
 from b2ss.baselines import GRUDecoder
 from b2ss.stats import mean_ci
-from b2ss.train import fit, predict
+from b2ss.train import fit, own_normalize, predict
 from b2ss.transfer import (TransferNormalizer, fit_supervised, fit_unsupervised,
                            source_feature_stats)
 
@@ -116,8 +116,11 @@ def main():
                 idx = rng.choice(len(Xtr), min(n, len(Xtr)), replace=False)
                 fit_supervised(f, Xtr[idx], Ytr[idx], epochs=120, lr=0.1, seed=seed)
                 res[f"few-{n}"] = r2_norm(f, Xte, Yte)
-            rt = GRUDecoder(len(keep)); fit(rt, Xtr, Ytr, epochs=args.epochs, lr=1e-3, batch_size=256, seed=seed)
-            res["full-retrain"] = r2(rt, Xte, Yte)
+            # own-normalised: a retrain stuck in the source's channel frame is handicapped,
+            # not an upper bound (see train.own_normalize).
+            Xtr_o, Xte_o = own_normalize(Xtr, Xte)
+            rt = GRUDecoder(len(keep)); fit(rt, Xtr_o, Ytr, epochs=args.epochs, lr=1e-3, batch_size=256, seed=seed)
+            res["full-retrain"] = r2(rt, Xte_o, Yte)
             for m in order:
                 per[m].append(res[m])
             print(f"seed {seed} target={target:>6}: " + "  ".join(f"{m}={res[m]:.3f}" for m in order))
