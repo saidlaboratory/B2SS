@@ -60,6 +60,8 @@ def main():
             ("Phase 11: real cross-session transfer (MC_Maze S/M/L)", "run_xsession.py", []),
             ("Phase 11: Indy continual stream (downloads Indy on first run)",
              "run_indy_stream.py", ["--seeds", "3"]),
+            ("Phase 11: Indy calibration-cost spectrum (beats-all-competitors)",
+             "run_indy_calibration.py", ["--seeds", "3"]),
             ("Phase 11: drift-decomposition figure", "run_decomposition_figure.py", []),
         ]:
             if (ROOT / "scripts" / script).exists():
