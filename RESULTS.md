@@ -399,7 +399,7 @@ Velocity R², mean [95% CI] over 3 seeds. `n_adapt` = adapted parameters (frozen
 | --- | --- | --- | --- | --- | --- |
 | MPA-style | structured (closed-form) | 0.563 [0.55, 0.58] | −0.100 | 0.10 | 0.000 |
 | RDumb | structured (reset Tent) | 0.505 [0.48, 0.53] | −0.056 | 0.10 | −0.031 |
-| **CADENCE** | structured (affine+anchor) | **0.503 [0.44, 0.57]** | −0.031 | **0.10** | −0.016 |
+| **CADENCE** | structured (shrinkage standardise) | **0.540 [0.52, 0.56]** | −0.031 | **0.10** | 0.000 |
 | CoTTA | structured (teacher affine) | 0.486 [0.47, 0.50] | −0.003 | 0.10 | −0.003 |
 | No-Adapt | — (frozen) | 0.408 [0.36, 0.46] | −0.031 | 0.10 | 0.000 |
 | Tent | structured (carried affine) | 0.401 [0.29, 0.51] | −0.029 | 0.167 | **−0.098** |
@@ -418,20 +418,20 @@ Velocity R², mean [95% CI] over 3 seeds. `n_adapt` = adapted parameters (frozen
 2. **The matched-parameter ablation fires — structure, not count.** free-LoRA (dense rank-1)
    and CADENCE's fast head carry the **same** parameter count (2·n_chan); only the structure
    differs (dense channel-mix vs per-channel diagonal). free-LoRA collapses, CADENCE holds at
-   0.503. The interpretable structure — not the parameter budget — confers the
+   0.540. The interpretable structure — not the parameter budget — confers the
    collapse-resistance. This was the pre-registered make-or-break test.
 3. **Frozen + cheap adaptation beats per-session retraining.** Full per-session recalibration
    from scratch reaches only **0.124** — the Indy sessions are strongly non-stationary *within*
    themselves (chronological split: train on the early part, deploy on the late part), so a
    from-scratch decoder on one session's data is both costly and *worse* than the frozen source
-   decoder (trained across 3 full sessions) with a tiny structured adapter (CADENCE 0.503). The
+   decoder (trained across 3 full sessions) with a tiny structured adapter (CADENCE 0.540). The
    robustness of the shared frozen backbone is exactly what per-session retraining throws away.
    _(Honest caveat: this reflects limited/non-stationary per-session data, not that retraining is
    inherently weak — a random-split within-session decoder scores far higher; the point is the
    deployment-realistic chronological regime.)_
 4. **CADENCE vs carried-forward Tent — no error accumulation.** Tent (0.401, BWT **−0.098**)
-   *accumulates error* over the stream, dropping to No-Adapt's level; CADENCE (0.503, BWT
-   −0.016) refreshes per session against a stable anchor reference and does not forget.
+   *accumulates error* over the stream, dropping to No-Adapt's level; CADENCE (0.540, BWT
+   0.000) refreshes its estimate per session against the source prior and does not forget.
 
 Figure: `results/indy_stream_pareto.png` (the accuracy × collapse-rate plane — structured
 methods top-left, unstructured bottom-right).

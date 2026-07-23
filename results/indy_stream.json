@@ -174,9 +174,9 @@
     },
     "cadence": {
       "cumulative": [
-        0.5029778436214353,
-        0.4354097812784888,
-        0.5705459059643818
+        0.5400475239148363,
+        0.5199094960162441,
+        0.5601855518134286
       ],
       "worst": [
         -0.03125770351228615,
@@ -189,9 +189,9 @@
         0.10000000000000006
       ],
       "bwt": [
-        -0.01570538431406021,
-        -0.04140463380637559,
-        0.009993865178255165
+        0.0,
+        0.0,
+        0.0
       ]
     },
     "full-retrain": {
@@ -217,5 +217,5 @@
       ]
     }
   },
-  "verdict": "CADENCE cum +0.095 vs No-Adapt, collapse 0.10 vs No-Adapt 0.10; unstructured (free-LoRA/NoMAD) collapse up to 1.00. PARETO WIN (structured adaptation stays accurate + collapse-safe; matched-param unstructured collapses)"
+  "verdict": "CADENCE cum +0.132 vs No-Adapt, collapse 0.10 vs No-Adapt 0.10; unstructured (free-LoRA/NoMAD) collapse up to 1.00. PARETO WIN (structured adaptation stays accurate + collapse-safe; matched-param unstructured collapses)"
 }
